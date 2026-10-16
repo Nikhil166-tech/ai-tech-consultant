@@ -7,17 +7,22 @@ from app.models import (
     Citation, ImageMetadata, ArticleChunk, EvidenceStatus
 )
 from app.database import Database
-from app.retrieval import HybridRetriever
+from app.retrieval import HybridRetriever, BaseEmbeddingProvider
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 class HybridRAGEngine:
-    def __init__(self, db: Database, anthropic_api_key: Optional[str] = None):
+    def __init__(
+        self,
+        db: Database,
+        anthropic_api_key: Optional[str] = None,
+        embedding_provider: Optional[BaseEmbeddingProvider] = None
+    ):
         self.db = db
         self.api_key = anthropic_api_key or settings.anthropic_api_key
         self.model = settings.anthropic_model_text
-        self.retriever = HybridRetriever()
+        self.retriever = HybridRetriever(embedding_provider=embedding_provider)
         self.client = None
         if self.api_key:
             try:
@@ -72,17 +77,18 @@ class HybridRAGEngine:
             category=request.category_filter
         )
 
-        calibrated_conf, evidence_status = self.retriever.evaluate_evidence(request.question, hybrid_results)
+        evidence_score, evidence_status = self.retriever.evaluate_evidence(request.question, hybrid_results)
 
-        if evidence_status in [EvidenceStatus.INSUFFICIENT, EvidenceStatus.NONE] or calibrated_conf < settings.evidence_threshold:
+        if evidence_status in [EvidenceStatus.INSUFFICIENT, EvidenceStatus.NONE] or evidence_score < settings.evidence_threshold:
             task = self.db.create_expert_task(
                 question=request.question,
-                context=f"Insufficient evidence (calibrated_conf={calibrated_conf}, status={evidence_status.value})."
+                context=f"Insufficient evidence (evidence_score={evidence_score}, status={evidence_status.value})."
             )
             return AskResponse(
                 answer="I apologize, but I do not have sufficient verified documentation in the Brilliant Directories Solution Center to answer this accurately. A support inquiry task has been routed to our product specialist team for verification.",
                 citations=[],
-                confidence_score=calibrated_conf,
+                evidence_score=evidence_score,
+                confidence_score=evidence_score,
                 evidence_status=evidence_status,
                 is_known=False,
                 needs_human_review=True,
@@ -173,7 +179,8 @@ class HybridRAGEngine:
         return AskResponse(
             answer=answer_text,
             citations=citations,
-            confidence_score=calibrated_conf,
+            evidence_score=evidence_score,
+            confidence_score=evidence_score,
             evidence_status=evidence_status,
             is_known=True,
             needs_human_review=False,

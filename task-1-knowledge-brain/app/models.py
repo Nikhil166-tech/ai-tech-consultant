@@ -1,5 +1,5 @@
-from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field
+﻿from typing import List, Optional, Dict, Any, Literal
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -18,6 +18,8 @@ class ImageMetadata(BaseModel):
     caption: Optional[str] = ""
     context_text: Optional[str] = ""
     section_heading: Optional[str] = ""
+    visual_verified: bool = False
+    visual_status: str = "unavailable"  # 'verified', 'unverified', or 'unavailable'
 
 class Article(BaseModel):
     url: str
@@ -82,12 +84,22 @@ class Citation(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     citations: List[Citation]
-    confidence_score: float  # Calibrated 0.0 to 1.0 (never artificially forced)
+    evidence_score: float = Field(
+        ...,
+        description="Heuristic evidence score (0.0 to 1.0) derived from hybrid retrieval and query term coverage. Not statistically calibrated against held-out validation data."
+    )
     evidence_status: EvidenceStatus
     is_known: bool
     needs_human_review: bool
     expert_task_id: Optional[str] = None
     visual_references: List[ImageMetadata] = Field(default_factory=list)
+    confidence_score: Optional[float] = None  # Deprecated alias for evidence_score
+
+    @model_validator(mode="after")
+    def populate_confidence_alias(self):
+        if self.confidence_score is None:
+            self.confidence_score = self.evidence_score
+        return self
 
 class ExpertTaskCreate(BaseModel):
     question: str

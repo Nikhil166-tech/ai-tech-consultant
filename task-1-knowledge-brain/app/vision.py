@@ -1,4 +1,4 @@
-import os
+﻿import os
 import httpx
 import base64
 import asyncio
@@ -44,9 +44,24 @@ class VisionAnalyzer:
                 return None
         return None
 
-    async def analyze_image(self, image_url: str, article_title: str, context_text: str = "", section_heading: str = "") -> ImageMetadata:
-        alt_text = f"Screenshot related to {article_title}"
+    async def analyze_image(
+        self,
+        image_url: str,
+        article_title: str,
+        context_text: str = "",
+        section_heading: str = "",
+        alt_text: str = ""
+    ) -> ImageMetadata:
+        """
+        Analyzes an article screenshot.
+        Requirement 5: If Claude Vision cannot inspect an image, do NOT assert what is visually
+        shown based on filename. Preserve alt text and nearby DOM context, mark visual analysis
+        as unverified/unavailable, and make this distinction available to retrieval and output.
+        """
+        preserved_alt = alt_text.strip() if alt_text and alt_text.strip() else f"Screenshot related to {article_title}"
         caption = ""
+        visual_verified = False
+        visual_status = "unavailable"
 
         if self.client and image_url.startswith("http"):
             img_data = await self._fetch_image_bytes(image_url)
@@ -74,26 +89,27 @@ class VisionAnalyzer:
                             }]
                         )
                         caption = response.content[0].text.strip()
+                        visual_verified = True
+                        visual_status = "verified"
                     except Exception as e:
-                        logger.info(f"Vision API fallback to heuristic: {e}")
+                        logger.info(f"Vision API analysis failed ({e}); falling back to preserved DOM context.")
 
-        if not caption:
-            caption = self._heuristic_caption(image_url, article_title, context_text, section_heading)
+        if not visual_verified:
+            # Explicitly mark unverified/unavailable without asserting visual UI elements from filename
+            clean_context = context_text.strip() if context_text else ""
+            if clean_context:
+                caption = f"[Visual analysis unverified] Preserved DOM context: {clean_context[:200]}"
+                visual_status = "unverified"
+            else:
+                caption = "[Visual analysis unavailable - refer to source documentation]"
+                visual_status = "unavailable"
 
         return ImageMetadata(
             url=image_url,
-            alt=alt_text,
+            alt=preserved_alt,
             caption=caption,
             context_text=context_text[:200],
-            section_heading=section_heading
+            section_heading=section_heading,
+            visual_verified=visual_verified,
+            visual_status=visual_status
         )
-
-    def _heuristic_caption(self, image_url: str, article_title: str, context_text: str, section_heading: str) -> str:
-        filename = image_url.split("/")[-1].split("?")[0].replace("-", " ").replace("_", " ")
-        if "." in filename:
-            filename = filename.rsplit(".", 1)[0]
-        prefix = f"[{section_heading}] " if section_heading and section_heading != "Overview" else ""
-        first_sentence = context_text.split(".")[0].strip() if context_text else ""
-        if first_sentence and len(first_sentence) > 15:
-            return f"{prefix}Screenshot illustrating {filename} for '{article_title}': {first_sentence}."
-        return f"{prefix}UI screenshot showing configuration interface for {article_title} ({filename})."

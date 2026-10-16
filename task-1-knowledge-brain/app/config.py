@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     knowledge_db_path: str = Field(default_factory=lambda: os.getenv("KNOWLEDGE_DB_PATH", "knowledge_brain.db"))
     default_sitemap_url: str = Field(default_factory=lambda: os.getenv("DEFAULT_SITEMAP_URL", "https://support.brilliantdirectories.com/support/sitemap.xml"))
     
+    # Embedding Configuration (Learned Semantic Provider)
+    embedding_provider: str = Field(default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "fastembed"))
+    embedding_model_name: str = Field(default_factory=lambda: os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5"))
+
     crawler_delay_seconds: float = Field(default_factory=lambda: float(os.getenv("CRAWLER_DELAY_SECONDS", "0.3")))
     max_concurrent_requests: int = Field(default_factory=lambda: int(os.getenv("MAX_CONCURRENT_REQUESTS", "3")))
     max_retries: int = Field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))

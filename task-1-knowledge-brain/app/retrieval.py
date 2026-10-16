@@ -1,10 +1,13 @@
 ﻿import re
 import math
 import hashlib
+import logging
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
 from app.models import ArticleChunk, SearchResult, EvidenceStatus
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
@@ -19,12 +22,56 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
 class BaseEmbeddingProvider(ABC):
     @abstractmethod
     def embed_text(self, text: str) -> List[float]:
+        """Embed a single text string into a dense vector."""
         pass
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Embed a list of text strings into a list of dense vectors."""
         return [self.embed_text(t) for t in texts]
 
-class SemanticFeatureEmbedding(BaseEmbeddingProvider):
+class FastEmbedProvider(BaseEmbeddingProvider):
+    """
+    Genuine learned semantic embedding provider using FastEmbed (ONNX runtime).
+    Defaults to BAAI/bge-small-en-v1.5 (384-dimensional dense semantic vectors).
+    """
+    def __init__(self, model_name: Optional[str] = None):
+        self.model_name = model_name or settings.embedding_model_name
+        self._model = None
+        self._init_model()
+
+    def _init_model(self):
+        try:
+            from fastembed import TextEmbedding
+            self._model = TextEmbedding(model_name=self.model_name)
+            logger.info(f"Initialized FastEmbedProvider with learned model '{self.model_name}'")
+        except Exception as e:
+            logger.error(f"Failed to load FastEmbed model '{self.model_name}': {e}")
+            raise
+
+    def embed_text(self, text: str) -> List[float]:
+        if not text.strip():
+            return []
+        if self._model is None:
+            self._init_model()
+        vec_generator = self._model.embed([text])
+        for vec in vec_generator:
+            return vec.tolist()
+        return []
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        if self._model is None:
+            self._init_model()
+        vec_generator = self._model.embed(texts)
+        return [vec.tolist() for vec in vec_generator]
+
+class DeterministicTestEmbeddingProvider(BaseEmbeddingProvider):
+    """
+    Lightweight deterministic vector provider for fast offline unit tests.
+    Explicitly labeled as a non-learned hashing projection for test environments only.
+    NOT called a semantic embedding.
+    """
     def __init__(self, dimensions: int = 128):
         self.dim = dimensions
 
@@ -48,6 +95,23 @@ class SemanticFeatureEmbedding(BaseEmbeddingProvider):
         if norm > 0.0:
             vec = [x / norm for x in vec]
         return vec
+
+def get_embedding_provider(
+    provider_type: Optional[str] = None,
+    model_name: Optional[str] = None
+) -> BaseEmbeddingProvider:
+    provider = (provider_type or settings.embedding_provider).lower()
+    if provider == "fastembed":
+        try:
+            return FastEmbedProvider(model_name=model_name)
+        except Exception as e:
+            logger.warning(f"FastEmbed unavailable ({e}); falling back to DeterministicTestEmbeddingProvider for offline safety.")
+            return DeterministicTestEmbeddingProvider()
+    elif provider in ["test", "deterministic_test"]:
+        return DeterministicTestEmbeddingProvider()
+    else:
+        logger.warning(f"Unknown embedding provider '{provider}', defaulting to FastEmbedProvider.")
+        return FastEmbedProvider(model_name=model_name)
 
 class LexicalRetriever:
     def tokenize(self, text: str) -> List[str]:
@@ -113,7 +177,7 @@ class HybridRetriever:
         embedding_provider: Optional[BaseEmbeddingProvider] = None,
         alpha: float = settings.hybrid_alpha
     ):
-        self.embedder = embedding_provider or SemanticFeatureEmbedding()
+        self.embedder = embedding_provider or get_embedding_provider()
         self.lexical = LexicalRetriever()
         self.dense = DenseVectorRetriever(self.embedder)
         self.alpha = alpha
@@ -129,7 +193,7 @@ class HybridRetriever:
         if not filtered or not query.strip():
             return []
 
-        # Use chunk.id as dictionary keys to avoid unhashable model error
+        # Key on chunk.id to avoid unhashable model error
         lex_tuples = self.lexical.score(query, filtered)
         lex_results = {c.id: s for c, s in lex_tuples}
 
@@ -155,6 +219,11 @@ class HybridRetriever:
         return hybrid_list[:top_k]
 
     def evaluate_evidence(self, query: str, top_results: List[Tuple[ArticleChunk, float, float, float]]) -> Tuple[float, EvidenceStatus]:
+        """
+        Derives an uncalibrated heuristic evidence score (0.0 to 1.0) and assigns an EvidenceStatus
+        (STRONG, PARTIAL, INSUFFICIENT, NONE). We do not claim statistical calibration without
+        measurements on held-out validation data.
+        """
         if not top_results:
             return 0.0, EvidenceStatus.NONE
 
@@ -163,13 +232,13 @@ class HybridRetriever:
         matched_tokens = sum(1 for t in q_tokens if t in top_chunk.text.lower() or t in top_chunk.title.lower())
         coverage = matched_tokens / max(len(q_tokens), 1)
 
-        calibrated_conf = round(min(1.0, (top_score * 0.6) + (coverage * 0.4)), 3)
+        evidence_score = round(min(1.0, (top_score * 0.6) + (coverage * 0.4)), 3)
 
-        if calibrated_conf >= 0.65 and coverage >= 0.5:
+        if evidence_score >= 0.65 and coverage >= 0.5:
             status = EvidenceStatus.STRONG
-        elif calibrated_conf >= settings.evidence_threshold:
+        elif evidence_score >= settings.evidence_threshold:
             status = EvidenceStatus.PARTIAL
         else:
             status = EvidenceStatus.INSUFFICIENT
 
-        return calibrated_conf, status
+        return evidence_score, status

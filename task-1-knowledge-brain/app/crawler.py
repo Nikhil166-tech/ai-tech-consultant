@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup, Tag
 from app.models import Article, ArticleChunk, ImageMetadata, SyncReport, SyncStatus
 from app.database import Database
 from app.vision import VisionAnalyzer
-from app.retrieval import SemanticFeatureEmbedding
+from app.retrieval import BaseEmbeddingProvider, get_embedding_provider
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -22,14 +22,15 @@ class PoliteCrawler:
         sitemap_url: Optional[str] = None,
         delay_seconds: Optional[float] = None,
         max_concurrent: Optional[int] = None,
-        vision_analyzer: Optional[VisionAnalyzer] = None
+        vision_analyzer: Optional[VisionAnalyzer] = None,
+        embedding_provider: Optional[BaseEmbeddingProvider] = None
     ):
         self.db = db
         self.sitemap_url = sitemap_url or settings.default_sitemap_url
         self.delay_seconds = delay_seconds if delay_seconds is not None else settings.crawler_delay_seconds
         self.semaphore = asyncio.Semaphore(max_concurrent or settings.max_concurrent_requests)
         self.vision = vision_analyzer or VisionAnalyzer()
-        self.embedder = SemanticFeatureEmbedding()
+        self.embedder = embedding_provider or get_embedding_provider()
         self.headers = {
             "User-Agent": "AITechConsultantBot/2.0 (Ethical Capstone Crawler; support-sync; contact: info@consultant.ai)"
         }
@@ -56,7 +57,13 @@ class PoliteCrawler:
                 return None
         return None
 
-    async def fetch_sitemap_urls(self, custom_url: Optional[str] = None) -> List[Dict[str, str]]:
+    async def fetch_sitemap_urls(self, custom_url: Optional[str] = None) -> Tuple[List[Dict[str, str]], bool]:
+        """
+        Fetches and parses sitemap XML.
+        Requirement 3: Explicitly indicates whether the complete root + all required
+        child sitemaps were fetched and parsed successfully (is_complete: bool).
+        Returns (entries_list, is_complete).
+        """
         target_url = custom_url or self.sitemap_url
         logger.info(f"Fetching sitemap from {target_url}")
         
@@ -64,21 +71,26 @@ class PoliteCrawler:
             resp = await self._fetch_with_retry(client, target_url)
             if not resp or resp.status_code != 200:
                 logger.error(f"Failed to fetch sitemap: status {getattr(resp, 'status_code', 'unknown')}")
-                return []
+                return [], False
 
             try:
                 root = ET.fromstring(resp.content)
             except ET.ParseError as e:
                 logger.error(f"Malformed XML in sitemap at {target_url}: {e}")
-                return []
+                return [], False
 
             namespace = ""
             if root.tag.startswith("{"):
                 namespace = root.tag.split("}")[0] + "}"
 
             results = []
+            is_complete = True
+
             if "sitemapindex" in root.tag:
                 sitemap_locs = [elem.text for elem in root.findall(f".//{namespace}loc") if elem.text]
+                if not sitemap_locs:
+                    is_complete = False
+
                 for sub_loc in sitemap_locs:
                     try:
                         sub_resp = await self._fetch_with_retry(client, sub_loc)
@@ -92,8 +104,12 @@ class PoliteCrawler:
                                         "url": loc.text.strip(),
                                         "lastmod": lastmod.text.strip() if lastmod is not None and lastmod.text else ""
                                     })
+                        else:
+                            logger.error(f"Child sitemap fetch failed for {sub_loc} (status={getattr(sub_resp, 'status_code', 'none')})")
+                            is_complete = False
                     except Exception as e:
-                        logger.warning(f"Error parsing sub-sitemap {sub_loc}: {e}")
+                        logger.error(f"Error parsing child sitemap {sub_loc}: {e}")
+                        is_complete = False
             else:
                 for url_elem in root.findall(f".//{namespace}url"):
                     loc = url_elem.find(f"{namespace}loc")
@@ -104,7 +120,7 @@ class PoliteCrawler:
                             "lastmod": lastmod.text.strip() if lastmod is not None and lastmod.text else ""
                         })
 
-            return results
+            return results, is_complete
 
     def _compute_hash(self, text: str) -> str:
         return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
@@ -130,74 +146,97 @@ class PoliteCrawler:
                         self.db.save_crawler_checkpoint(url, 500, error="Network / Retry exhaustion")
                         return None, "ERROR"
 
-                    etag = resp.headers.get("etag")
-                    last_modified = lastmod or resp.headers.get("last-modified")
-
                     if resp.status_code != 200:
-                        self.db.save_crawler_checkpoint(url, resp.status_code, etag, last_modified, error=f"HTTP {resp.status_code}")
+                        self.db.save_crawler_checkpoint(url, resp.status_code, error=f"HTTP {resp.status_code}")
                         return None, "ERROR"
 
-                    soup = BeautifulSoup(resp.content, "html.parser")
+                    etag = resp.headers.get("etag")
+                    last_modified = resp.headers.get("last-modified") or lastmod
 
-                    title = "Help Article"
-                    title_tag = soup.find("h1") or soup.find("title")
-                    if title_tag:
-                        title = title_tag.get_text(strip=True).replace(" - Brilliant Directories", "").replace(" | Brilliant Directories", "")
+                    html_content = resp.text
+                    soup = BeautifulSoup(html_content, "html.parser")
 
+                    # Extract title
+                    title_elem = soup.find("h1") or soup.find("h2") or soup.find("title")
+                    title = title_elem.get_text(strip=True) if title_elem else "Brilliant Directories Knowledge Article"
+
+                    # Breadcrumbs for category / folder
                     category = "General"
                     folder = "General"
-                    breadcrumbs = soup.find_all("li", class_=re.compile(r"breadcrumb", re.I)) or soup.find_all("nav", class_=re.compile(r"breadcrumb", re.I))
+                    breadcrumbs = soup.find_all(class_=re.compile(r"breadcrumb", re.I))
                     if breadcrumbs:
-                        crumb_texts = [b.get_text(strip=True) for b in breadcrumbs if b.get_text(strip=True)]
-                        if len(crumb_texts) >= 3:
-                            category = crumb_texts[1]
-                            folder = crumb_texts[2]
-                        elif len(crumb_texts) == 2:
-                            category = crumb_texts[1]
+                        crumbs = [b.get_text(strip=True) for b in breadcrumbs[0].find_all(["a", "li", "span"])]
+                        crumbs = [c for c in crumbs if c and c != ">" and "/" not in c]
+                        if len(crumbs) >= 2:
+                            category = crumbs[1]
+                        if len(crumbs) >= 3:
+                            folder = crumbs[2]
 
-                    body_container = (
-                        soup.find("div", class_=re.compile(r"article-body|solution-body|content-body", re.I))
-                        or soup.find("article")
-                        or soup.find("div", id=re.compile(r"content|article", re.I))
-                        or soup.body
+                    # Find content container
+                    container = (
+                        soup.find("article") or
+                        soup.find(class_=re.compile(r"article-body|solution-article|content|post-body", re.I)) or
+                        soup.find("main") or
+                        soup.body
                     )
-                    
-                    if not body_container:
+
+                    if not container:
                         return None, "ERROR"
 
-                    # Section-aware chunking & local screenshot binding
-                    chunks, all_images, full_text = await self._section_aware_chunking(url, title, category, folder, body_container)
-                    content_hash = self._compute_hash(full_text)
+                    # Section-aware chunking preserving headings and local image association
+                    chunks, images, full_article_text = await self._section_aware_chunking(
+                        article_url=url,
+                        title=title,
+                        category=category,
+                        folder=folder,
+                        container=container
+                    )
 
-                    # Classify correctly based on content_hash
-                    if existing is None:
-                        classification = "NEW"
-                    elif existing.content_hash == content_hash:
-                        classification = "UNCHANGED"
-                    else:
-                        classification = "CHANGED"
+                    new_content_hash = self._compute_hash(full_article_text)
+
+                    # Precise Classification: NEW, CHANGED, UNCHANGED
+                    classification = "NEW"
+                    if existing:
+                        if existing.content_hash == new_content_hash:
+                            classification = "UNCHANGED"
+                            self.db.save_crawler_checkpoint(
+                                url=url,
+                                status_code=resp.status_code,
+                                etag=etag,
+                                last_modified=last_modified,
+                                content_hash=new_content_hash
+                            )
+                            return existing, classification
+                        else:
+                            classification = "CHANGED"
 
                     article = Article(
                         url=url,
                         title=title,
                         category=category,
                         folder=folder,
-                        body_text=full_text,
-                        content_hash=content_hash,
-                        images=all_images,
+                        body_text=full_article_text,
+                        content_hash=new_content_hash,
+                        images=images,
                         last_modified=last_modified,
                         etag=etag,
                         status="active",
                         crawled_at=datetime.now(timezone.utc)
                     )
 
-                    # Save to DB & embed chunks
+                    # Persist article and chunks
                     self.db.upsert_article(article)
-                    self.db.save_crawler_checkpoint(url, 200, etag, last_modified, content_hash=content_hash)
-
-                    self.db.delete_chunks_for_article(article.url)
+                    self.db.delete_chunks_for_article(url)
                     self.db.save_chunks(chunks)
+                    self.db.save_crawler_checkpoint(
+                        url=url,
+                        status_code=resp.status_code,
+                        etag=etag,
+                        last_modified=last_modified,
+                        content_hash=new_content_hash
+                    )
 
+                    logger.info(f"Successfully processed {classification} article: {url} ({len(chunks)} chunks, {len(images)} images)")
                     return article, classification
 
             except Exception as e:
@@ -214,12 +253,11 @@ class PoliteCrawler:
         container: Tag
     ) -> Tuple[List[ArticleChunk], List[ImageMetadata], str]:
         """
-        Extracts sections based on headings (h1, h2, h3, h4), keeping tables and lists intact,
-        and binds images strictly to their local section/DOM context.
+        Preserves section hierarchy, tables, procedural steps, and associates
+        images strictly with the section in which they appear.
         """
-        # Decompose scripts and useless elements
-        for tag in container(["script", "style", "nav", "footer", "form"]):
-            tag.decompose()
+        for bad in container(["script", "style", "nav", "footer", "noscript", "svg"]):
+            bad.decompose()
 
         sections: List[Dict[str, Any]] = []
         current_heading = "Overview"
@@ -227,11 +265,11 @@ class PoliteCrawler:
         current_section_images: List[ImageMetadata] = []
         all_images: List[ImageMetadata] = []
 
-        elements = container.find_all(["h1", "h2", "h3", "h4", "p", "ul", "ol", "table", "img"], recursive=True)
+        direct_elements = container.find_all(["h1", "h2", "h3", "h4", "p", "ul", "ol", "table", "img"], recursive=True)
 
-        for el in elements:
+        for el in direct_elements:
             if el.name in ["h1", "h2", "h3", "h4"]:
-                # Flush previous section
+                # New section heading encountered: flush previous section
                 if current_elements or current_section_images:
                     sections.append({
                         "heading": current_heading,
@@ -243,13 +281,23 @@ class PoliteCrawler:
                 current_heading = el.get_text(strip=True) or current_heading
 
             elif el.name == "img":
-                src = el.get("src")
-                if src:
-                    if not src.startswith("http"):
-                        src = f"https://support.brilliantdirectories.com{src}" if src.startswith("/") else f"https://support.brilliantdirectories.com/{src}"
+                src = el.get("src") or el.get("data-src")
+                if src and not src.startswith("data:"):
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    elif src.startswith("/"):
+                        src = "https://support.brilliantdirectories.com" + src
+
                     parent = el.find_parent(["p", "div", "li"])
                     context = parent.get_text(strip=True) if parent else ""
-                    img_meta = await self.vision.analyze_image(src, title, context, section_heading=current_heading)
+                    alt_text = el.get("alt", "")
+                    img_meta = await self.vision.analyze_image(
+                        src,
+                        title,
+                        context,
+                        section_heading=current_heading,
+                        alt_text=alt_text
+                    )
                     current_section_images.append(img_meta)
                     all_images.append(img_meta)
 
@@ -311,7 +359,6 @@ class PoliteCrawler:
                     [f"[{img.caption}]" for img in sec_images if img.caption]
                 )
 
-            # Split large sections into max 350-word chunks if too long, retaining heading context
             words = sec_text.split()
             if len(words) <= 350:
                 chunk_text = f"[{sec_heading}]\n{sec_text}" if sec_heading != "Overview" else sec_text
@@ -365,9 +412,10 @@ class PoliteCrawler:
 
     async def sync_daily(self, max_pages: Optional[int] = None) -> SyncReport:
         """
-        Crucial requirement 1: ALWAYS use the COMPLETE successfully fetched sitemap
-        for deleted-page detection. max_pages limits only pages crawled in this run,
-        NEVER the deletion comparison.
+        Sitemap synchronization with strict deletion safety.
+        Requirement 3: Explicitly checks is_complete. If root or any child sitemap fails,
+        is_complete is False. Zero deletions are performed, but retrieved entries are
+        safely ingested/updated.
         """
         start_time = datetime.now(timezone.utc)
         self.db.set_sync_status(SyncStatus(
@@ -376,23 +424,28 @@ class PoliteCrawler:
             updated_at=start_time.isoformat()
         ))
 
-        sitemap_entries = await self.fetch_sitemap_urls()
+        sitemap_entries, is_complete = await self.fetch_sitemap_urls()
         total_in_sitemap = len(sitemap_entries)
 
-        # 1. COMPLETE sitemap set for deletion detection
         full_sitemap_urls = {entry["url"] for entry in sitemap_entries}
         active_db_urls = set(self.db.get_all_active_urls())
 
         removed_count = 0
-        if full_sitemap_urls:
-            # Only run deletion if sitemap fetch succeeded
+        if is_complete and full_sitemap_urls:
+            # Perform REMOVED detection ONLY when root + all child sitemaps succeeded
             for db_url in active_db_urls:
                 if db_url not in full_sitemap_urls and not db_url.startswith("expert://"):
                     logger.info(f"Article removed from complete sitemap, purging: {db_url}")
                     self.db.mark_article_removed(db_url)
                     removed_count += 1
+        elif not is_complete:
+            logger.warning(
+                "Sitemap fetch was partial or incomplete (is_complete=False). "
+                "Skipping REMOVED detection to prevent accidental article purging. "
+                f"Retrieved {len(sitemap_entries)} articles will still be safely ingested/updated."
+            )
 
-        # 2. Limit crawl slice by max_pages
+        # Limit crawl slice by max_pages for processing
         crawl_entries = sitemap_entries[:max_pages] if max_pages else sitemap_entries
 
         added_count = 0
@@ -445,5 +498,3 @@ class PoliteCrawler:
         ))
 
         return report
-
-

@@ -1,9 +1,14 @@
-import sqlite3
+﻿import sqlite3
 import json
 import uuid
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from app.models import Article, ArticleChunk, ImageMetadata, ExpertTask, SyncStatus, SyncReport
+
+logger = logging.getLogger(__name__)
+
+CURRENT_SCHEMA_VERSION = 2
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -98,9 +103,51 @@ class Database:
             )
             """)
             
+            # Run migrations first so any missing legacy columns exist before indexing
+            self._apply_migrations(cursor)
+            
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_url ON chunks(article_url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status)")
             conn.commit()
+
+    def _apply_migrations(self, cursor: sqlite3.Cursor):
+        """Ensures previous database schemas cannot silently break the new version."""
+        cursor.execute("PRAGMA user_version")
+        row = cursor.fetchone()
+        version = row[0] if row else 0
+
+        def ensure_column(table: str, col_name: str, col_type: str):
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = [c[1] for c in cursor.fetchall()]
+            if col_name not in columns:
+                logger.info(f"Migrating schema: Adding {col_name} ({col_type}) to table {table}")
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+
+        # Ensure articles columns
+        ensure_column("articles", "category", "TEXT DEFAULT 'General'")
+        ensure_column("articles", "folder", "TEXT DEFAULT 'General'")
+        ensure_column("articles", "content_hash", "TEXT")
+        ensure_column("articles", "images_json", "TEXT DEFAULT '[]'")
+        ensure_column("articles", "last_modified", "TEXT")
+        ensure_column("articles", "etag", "TEXT")
+        ensure_column("articles", "status", "TEXT DEFAULT 'active'")
+        ensure_column("articles", "crawled_at", "TEXT")
+
+        # Ensure chunks columns
+        ensure_column("chunks", "section_heading", "TEXT DEFAULT 'Overview'")
+        ensure_column("chunks", "source_type", "TEXT DEFAULT 'OFFICIAL_DOC'")
+        ensure_column("chunks", "provenance_notes", "TEXT")
+        ensure_column("chunks", "images_json", "TEXT DEFAULT '[]'")
+        ensure_column("chunks", "visual_context", "TEXT DEFAULT ''")
+        ensure_column("chunks", "embedding_json", "TEXT DEFAULT '[]'")
+
+        # Ensure expert_tasks columns
+        ensure_column("expert_tasks", "expert_id", "TEXT")
+        ensure_column("expert_tasks", "version", "TEXT DEFAULT '1.0'")
+        ensure_column("expert_tasks", "provenance_notes", "TEXT")
+
+        if version < CURRENT_SCHEMA_VERSION:
+            cursor.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
 
     def upsert_article(self, article: Article):
         images_json = json.dumps([img.model_dump() for img in article.images])
@@ -191,20 +238,21 @@ class Database:
             row = cursor.fetchone()
             if not row:
                 return None
-            images_data = json.loads(row["images_json"]) if row["images_json"] else []
+            images_data = json.loads(row["images_json"]) if "images_json" in row.keys() and row["images_json"] else []
             images = [ImageMetadata(**img) for img in images_data]
-            crawled = datetime.fromisoformat(row["crawled_at"]) if row["crawled_at"] else datetime.now(timezone.utc)
+            crawled_val = row["crawled_at"] if "crawled_at" in row.keys() else None
+            crawled = datetime.fromisoformat(crawled_val) if crawled_val else datetime.now(timezone.utc)
             return Article(
                 url=row["url"],
                 title=row["title"],
-                category=row["category"],
-                folder=row["folder"],
+                category=row["category"] if "category" in row.keys() else "General",
+                folder=row["folder"] if "folder" in row.keys() else "General",
                 body_text=row["body_text"],
-                content_hash=row["content_hash"],
+                content_hash=row["content_hash"] if "content_hash" in row.keys() else None,
                 images=images,
-                last_modified=row["last_modified"],
-                etag=row["etag"],
-                status=row["status"],
+                last_modified=row["last_modified"] if "last_modified" in row.keys() else None,
+                etag=row["etag"] if "etag" in row.keys() else None,
+                status=row["status"] if "status" in row.keys() else "active",
                 crawled_at=crawled
             )
 
@@ -224,19 +272,19 @@ class Database:
             """)
             chunks = []
             for row in cursor.fetchall():
-                emb = json.loads(row["embedding_json"]) if row["embedding_json"] else []
-                imgs_data = json.loads(row["images_json"]) if row["images_json"] else []
+                emb = json.loads(row["embedding_json"]) if "embedding_json" in row.keys() and row["embedding_json"] else []
+                imgs_data = json.loads(row["images_json"]) if "images_json" in row.keys() and row["images_json"] else []
                 imgs = [ImageMetadata(**img) for img in imgs_data]
                 chunks.append(ArticleChunk(
                     id=row["id"],
                     article_url=row["article_url"],
                     title=row["title"],
-                    category=row["category"],
-                    folder=row["folder"],
+                    category=row["category"] if "category" in row.keys() else "General",
+                    folder=row["folder"] if "folder" in row.keys() else "General",
                     section_heading=row["section_heading"] if "section_heading" in row.keys() else "Overview",
-                    chunk_index=row["chunk_index"],
+                    chunk_index=row["chunk_index"] if "chunk_index" in row.keys() else 0,
                     text=row["text"],
-                    visual_context=row["visual_context"],
+                    visual_context=row["visual_context"] if "visual_context" in row.keys() else "",
                     images=imgs,
                     embedding=emb,
                     source_type=row["source_type"] if "source_type" in row.keys() else "OFFICIAL_DOC",

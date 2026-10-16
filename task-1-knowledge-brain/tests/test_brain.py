@@ -8,7 +8,8 @@ from app.models import Article, ArticleChunk, ImageMetadata, AskRequest, SearchR
 from app.database import Database
 from app.rag_engine import HybridRAGEngine
 from app.crawler import PoliteCrawler
-from app.retrieval import SemanticFeatureEmbedding, cosine_similarity
+from app.vision import VisionAnalyzer
+from app.retrieval import get_embedding_provider, FastEmbedProvider, DeterministicTestEmbeddingProvider, cosine_similarity
 
 @pytest.fixture
 def temp_db(tmp_path):
@@ -30,7 +31,9 @@ def sample_article():
                 alt="Stripe credentials input",
                 caption="UI view of Finance > Payment Gateways showing Stripe API keys input.",
                 context_text="Enter your Stripe Publishable Key here.",
-                section_heading="Credentials Setup"
+                section_heading="Credentials Setup",
+                visual_verified=True,
+                visual_status="verified"
             )
         ]
     )
@@ -117,7 +120,7 @@ def test_05_content_hash_classification(temp_db):
 @pytest.mark.asyncio
 async def test_06_safe_deletion_with_max_pages_limit(temp_db, sample_article, monkeypatch):
     """
-    Requirement 1: max_pages must ONLY limit pages crawled in that run,
+    max_pages must ONLY limit pages crawled in that run,
     never falsely delete pages that are still present in the complete sitemap!
     """
     temp_db.upsert_article(sample_article)
@@ -134,51 +137,79 @@ async def test_06_safe_deletion_with_max_pages_limit(temp_db, sample_article, mo
 
     crawler = PoliteCrawler(db=temp_db)
 
-    # Mock sitemap returning BOTH articles in complete sitemap
+    # Mock sitemap returning BOTH articles in complete sitemap (is_complete=True)
     async def mock_fetch_sitemap(*args, **kwargs):
         return [
             {"url": sample_article.url, "lastmod": "2026-10-15"},
             {"url": article_2.url, "lastmod": "2026-10-15"}
-        ]
+        ], True
     monkeypatch.setattr(crawler, "fetch_sitemap_urls", mock_fetch_sitemap)
 
-    # Mock crawler to avoid external network calls
     async def mock_crawl(url, lastmod):
         return sample_article, "UNCHANGED"
     monkeypatch.setattr(crawler, "crawl_article", mock_crawl)
 
-    # Run sync with max_pages = 1
     report = await crawler.sync_daily(max_pages=1)
     
-    # article_2 was NOT crawled in this slice, but it MUST NOT be deleted because it is in the complete sitemap!
     assert report.removed == 0
     assert article_2.url in temp_db.get_all_active_urls()
     assert sample_article.url in temp_db.get_all_active_urls()
 
 def test_07_removed_article_purges_from_answers(temp_db, sample_article):
-    crawler = PoliteCrawler(db=temp_db)
+    """
+    Requirement 6: Verify an actual searchable chunk exists before deletion,
+    verify it is returned by search BEFORE deletion, then verify it disappears afterward.
+    """
     temp_db.upsert_article(sample_article)
-    chunks = crawler._chunk_article(sample_article) if hasattr(crawler, '_chunk_article') else []
-    temp_db.save_chunks(chunks)
+    chunk = ArticleChunk(
+        id="chunk_stripe_keys",
+        article_url=sample_article.url,
+        title=sample_article.title,
+        category=sample_article.category,
+        folder=sample_article.folder,
+        section_heading="Credentials Setup",
+        chunk_index=0,
+        text=sample_article.body_text
+    )
+    temp_db.save_chunks([chunk])
 
     rag = HybridRAGEngine(db=temp_db)
+    
+    # 1. Search BEFORE deletion - MUST return the chunk
+    before_results = rag.search("Stripe Publishable Key")
+    assert len(before_results) > 0
+    assert before_results[0].article_url == sample_article.url
+    assert "Stripe" in before_results[0].snippet
+
+    # 2. Perform deletion
     temp_db.mark_article_removed(sample_article.url)
-    after = rag.search("Stripe")
-    assert len(after) == 0
-    assert temp_db.get_all_active_urls() == []
 
-def test_08_hybrid_dense_and_lexical_retrieval(temp_db):
-    embedder = SemanticFeatureEmbedding(dimensions=128)
-    e1 = embedder.embed_text("Stripe payment gateway configuration")
-    e2 = embedder.embed_text("Stripe payment processing settings")
-    e3 = embedder.embed_text("Completely unrelated baking recipe for chocolate cake")
+    # 3. Search AFTER deletion - MUST completely disappear
+    after_results = rag.search("Stripe Publishable Key")
+    assert len(after_results) == 0
+    assert sample_article.url not in temp_db.get_all_active_urls()
+    assert len(temp_db.get_all_chunks()) == 0
 
-    sim_related = cosine_similarity(e1, e2)
-    sim_unrelated = cosine_similarity(e1, e3)
-    assert sim_related > sim_unrelated
+def test_08_learned_semantic_embeddings_provider():
+    """
+    Requirement 1: Test learned semantic embedding provider using FastEmbed.
+    Verify dense embeddings capture semantic similarity between paraphrased queries.
+    """
+    embedder = get_embedding_provider("fastembed")
+    assert isinstance(embedder, FastEmbedProvider)
+
+    e_query = embedder.embed_text("how to configure Stripe payment gateway")
+    e_semantic_match = embedder.embed_text("setting up credit card processing credentials")
+    e_unrelated = embedder.embed_text("baking chocolate cake with vanilla frosting")
+
+    assert len(e_query) == 384
+    sim_match = cosine_similarity(e_query, e_semantic_match)
+    sim_unrelated = cosine_similarity(e_query, e_unrelated)
+
+    # Learned semantic embedding should rank related concepts higher than unrelated
+    assert sim_match > sim_unrelated
 
 def test_09_category_filtering(temp_db, sample_article):
-    crawler = PoliteCrawler(db=temp_db)
     chunks = [
         ArticleChunk(
             id="c1",
@@ -223,11 +254,12 @@ async def test_10_ask_with_citations_and_section_headings(temp_db, sample_articl
     assert len(resp.citations) > 0
     assert resp.citations[0].section_heading == "Credentials Setup"
     assert resp.evidence_status in [EvidenceStatus.STRONG, EvidenceStatus.PARTIAL]
+    assert resp.evidence_score >= 0.30
 
 @pytest.mark.asyncio
 async def test_11_insufficient_evidence_uncalibrated_honest_refusal(temp_db):
     """
-    Requirement 8: Never force confidence to 0.75.
+    Requirement 2: Rename confidence_score to evidence_score.
     Must truthfully report insufficient evidence and trigger fallback.
     """
     rag = HybridRAGEngine(db=temp_db)
@@ -235,8 +267,8 @@ async def test_11_insufficient_evidence_uncalibrated_honest_refusal(temp_db):
     assert resp.is_known is False
     assert resp.needs_human_review is True
     assert resp.evidence_status in [EvidenceStatus.INSUFFICIENT, EvidenceStatus.NONE]
-    assert resp.confidence_score < 0.30
-    assert resp.confidence_score != 0.75
+    assert resp.evidence_score < 0.30
+    assert resp.confidence_score == resp.evidence_score
     assert resp.expert_task_id is not None
 
 def test_12_expert_task_provenance_tracking(temp_db):
@@ -278,10 +310,7 @@ async def test_13_self_evolving_memory_loop_with_provenance(temp_db):
 
 @pytest.mark.asyncio
 async def test_14_rag_prompt_injection_defense(temp_db):
-    """
-    Requirement 9: Retrieved documentation is untrusted evidence, never instructions.
-    Test adversarial prompt injection embedded in documentation.
-    """
+    """Retrieved documentation is untrusted evidence, never instructions."""
     rag = HybridRAGEngine(db=temp_db)
     malicious_body = (
         "Normal documentation header.\n"
@@ -325,8 +354,9 @@ async def test_15_malformed_sitemap_xml_safe_handling(temp_db, monkeypatch):
             content = b"<html><not-xml>unclosed tags and junk"
         return MockResp()
     monkeypatch.setattr(crawler, "_fetch_with_retry", mock_malformed)
-    entries = await crawler.fetch_sitemap_urls("https://bad.sitemap.xml")
+    entries, is_complete = await crawler.fetch_sitemap_urls("https://bad.sitemap.xml")
     assert entries == []
+    assert is_complete is False
 
 @pytest.mark.asyncio
 async def test_16_transient_retry_exponential_backoff(temp_db, monkeypatch):
@@ -342,8 +372,8 @@ async def test_16_transient_retry_exponential_backoff(temp_db, monkeypatch):
                 self.content = b"Success"
                 self.headers = {}
         if attempts < 2:
-            return MockResp(503)  # Fail once with 503
-        return MockResp(200)       # Succeed on second attempt
+            return MockResp(503)
+        return MockResp(200)
 
     class MockAsyncClient:
         async def __aenter__(self):
@@ -375,7 +405,6 @@ async def test_17_client_4xx_not_retried(temp_db):
     resp = await crawler._fetch_with_retry(Mock404Client(), "https://notfound.test")
     assert resp is not None
     assert resp.status_code == 404
-    # 404 client error must NOT trigger multiple retries
     assert attempts == 1
 
 def test_18_crawler_checkpoint_save_and_resume(temp_db):
@@ -422,4 +451,134 @@ def test_20_sync_status_tracking(temp_db):
     assert retrieved.last_report.updated == 2
     assert retrieved.last_report.removed == 1
 
+@pytest.mark.asyncio
+async def test_21_partial_child_sitemap_failure_performs_zero_deletions(temp_db, monkeypatch):
+    """
+    Requirement 3: Fix sitemap deletion safety for partial sitemap-index failures.
+    If one child sitemap fails, is_complete MUST be False.
+    sync_daily must allow safe ingestion/update of retrieved entries but perform ZERO deletions.
+    """
+    article_existing = Article(
+        url="https://support.bd.com/existing-article",
+        title="Existing Article",
+        category="General",
+        folder="General",
+        body_text="Existing active article that should not be purged during partial failure.",
+        content_hash="h_existing"
+    )
+    temp_db.upsert_article(article_existing)
+    assert len(temp_db.get_all_active_urls()) == 1
 
+    crawler = PoliteCrawler(db=temp_db)
+
+    # Simulate a sitemap index where root succeeds, child-1 succeeds, but child-2 fails
+    root_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <sitemap><loc>https://support.bd.com/child-1.xml</loc></sitemap>
+        <sitemap><loc>https://support.bd.com/child-2.xml</loc></sitemap>
+    </sitemapindex>"""
+
+    child_1_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc>https://support.bd.com/new-article-1</loc></url>
+    </urlset>"""
+
+    async def mock_fetch_retry(client, url):
+        class MockResp:
+            def __init__(self, sc, content):
+                self.status_code = sc
+                self.content = content
+        if "sitemap.xml" in url or "root" in url:
+            return MockResp(200, root_xml)
+        elif "child-1.xml" in url:
+            return MockResp(200, child_1_xml)
+        elif "child-2.xml" in url:
+            # Child 2 encounters 500 error / partial network outage
+            return MockResp(500, b"Internal Server Error")
+        return None
+
+    monkeypatch.setattr(crawler, "_fetch_with_retry", mock_fetch_retry)
+
+    # 1. Verify fetch_sitemap_urls returns is_complete == False
+    entries, is_complete = await crawler.fetch_sitemap_urls("https://support.bd.com/sitemap.xml")
+    assert is_complete is False
+    assert len(entries) == 1
+    assert entries[0]["url"] == "https://support.bd.com/new-article-1"
+
+    # Mock crawl_article for safe ingestion
+    async def mock_crawl(url, lastmod):
+        art = Article(
+            url=url,
+            title="New Article 1",
+            category="General",
+            folder="General",
+            body_text="New text",
+            content_hash="h_new"
+        )
+        temp_db.upsert_article(art)
+        return art, "NEW"
+    monkeypatch.setattr(crawler, "crawl_article", mock_crawl)
+
+    # 2. Run sync_daily
+    report = await crawler.sync_daily()
+
+    # ZERO deletions must be performed because is_complete was False
+    assert report.removed == 0
+    assert article_existing.url in temp_db.get_all_active_urls()
+    # But retrieved entry was safely ingested!
+    assert "https://support.bd.com/new-article-1" in temp_db.get_all_active_urls()
+    assert report.added == 1
+
+@pytest.mark.asyncio
+async def test_22_vision_fallback_unverified_preserves_dom_context():
+    """
+    Requirement 5: If Claude Vision cannot inspect an image, do not assert what is visually shown
+    based on filename. Preserve alt text and nearby DOM context, mark visual analysis as
+    unavailable/unverified, and make this distinction available to retrieval/output.
+    """
+    analyzer = VisionAnalyzer(api_key=None)  # Offline / no API key
+    meta = await analyzer.analyze_image(
+        image_url="https://support.bd.com/images/secret-admin-hack.png",
+        article_title="Finance Gateways",
+        context_text="Click on the blue Save Settings button at the bottom of the form.",
+        section_heading="Save Form",
+        alt_text="Form action buttons"
+    )
+    assert meta.visual_verified is False
+    assert meta.visual_status == "unverified"
+    assert "secret admin hack" not in meta.caption.lower()  # Did NOT guess from filename
+    assert "Visual analysis unverified" in meta.caption
+    assert "Click on the blue Save Settings button" in meta.caption
+    assert meta.alt == "Form action buttons"
+
+def test_23_database_schema_auto_migration(tmp_path):
+    """
+    Requirement 8: Ensure a previous database schema cannot silently break the new version.
+    Create a legacy SQLite database missing modern columns, instantiate Database,
+    and verify it cleanly auto-migrates without data loss.
+    """
+    import sqlite3
+    db_file = tmp_path / "legacy_v1.db"
+    conn = sqlite3.connect(str(db_file))
+    cursor = conn.cursor()
+    # Legacy schema missing content_hash, section_heading, images_json, provenance_notes
+    cursor.execute("""
+    CREATE TABLE articles (
+        url TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body_text TEXT NOT NULL
+    )
+    """)
+    cursor.execute("INSERT INTO articles (url, title, body_text) VALUES ('https://test.com/1', 'Legacy 1', 'Content 1')")
+    conn.commit()
+    conn.close()
+
+    # Instantiate Database on the legacy file
+    upgraded_db = Database(db_path=str(db_file))
+
+    # Should not crash, and should auto-migrate
+    active = upgraded_db.get_all_active_urls()
+    assert len(active) == 1
+    art = upgraded_db.get_article("https://test.com/1")
+    assert art is not None
+    assert art.title == "Legacy 1"
