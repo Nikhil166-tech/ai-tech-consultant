@@ -6,9 +6,12 @@ services:
     container_name: task1-knowledge-brain
     ports:
       - "8000:8000"
+    volumes:
+      - task1-data:/data
     environment:
       - PORT=8000
       - ENABLE_DAILY_SYNC=false
+      - KNOWLEDGE_DB_PATH=/data/knowledge_brain.db
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_MODEL_TEXT=${ANTHROPIC_MODEL_TEXT:-claude-haiku-5-5}
       - ANTHROPIC_MODEL_VISION=${ANTHROPIC_MODEL_VISION:-claude-sonnet-5-5}
@@ -19,6 +22,19 @@ services:
       retries: 5
       start_period: 10s
 
+  task1-bootstrap:
+    build:
+      context: ./task-1-knowledge-brain
+      dockerfile: Dockerfile
+    container_name: task1-bootstrap
+    depends_on:
+      task1:
+        condition: service_healthy
+    command: ["python", "scripts/bootstrap.py"]
+    environment:
+      - TASK1_API_URL=http://task1:8000
+    restart: "no"
+
   task2:
     build:
       context: ./task-2-inbox-agent
@@ -26,9 +42,11 @@ services:
     container_name: task2-inbox-agent
     ports:
       - "3000:3000"
+    volumes:
+      - task2-data:/app/data
     depends_on:
-      task1:
-        condition: service_healthy
+      task1-bootstrap:
+        condition: service_completed_successfully
     environment:
       - PORT=3000
       - TASK1_API_URL=http://task1:8000
@@ -42,11 +60,18 @@ services:
     container_name: task3-meeting-sow
     ports:
       - "8002:8002"
+    volumes:
+      - task3-data:/app/data
     depends_on:
-      task1:
-        condition: service_healthy
+      task1-bootstrap:
+        condition: service_completed_successfully
     environment:
       - PORT=8002
       - TASK1_API_URL=http://task1:8000
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_MODEL_TEXT=${ANTHROPIC_MODEL_TEXT:-claude-haiku-5-5}
+
+volumes:
+  task1-data:
+  task2-data:
+  task3-data:

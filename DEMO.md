@@ -8,11 +8,11 @@ This walkthrough guides the evaluator through a structured <=10-minute live demo
 - **On Screen**: Camera on face / Introduction slide showing system architecture diagram.
 - **Talking Points**:
   - Introduce myself and the problem: tech consultancies struggle with hallucinated scopes and inconsistent client communications on complex vertical SaaS platforms like Brilliant Directories.
-  - Present the core design rule: **Task 1 is the single source of truth**. Tasks 2 and 3 duplicate zero platform knowledge, ensuring 100% consistency across support emails and technical SOWs.
+  - Present the core design rule: **Task 1 is the single source of truth**. Tasks 2 and 3 duplicate zero platform knowledge, reducing knowledge divergence across support emails and technical SOWs.
 
 ---
 
-### Phase 2: Task 1 — Grounded Knowledge Brain with Citations (0:30 – 2:00)
+### Phase 2: Task 1 – Grounded Knowledge Brain with Citations (0:30 – 2:00)
 - **Action**: Open Swagger UI at `http://localhost:8000/docs`.
 - **Demo Request 1 (Grounded Native Feature)**:
   - Query: `"How do I connect Stripe to accept recurring payments for member subscriptions?"`
@@ -25,7 +25,7 @@ This walkthrough guides the evaluator through a structured <=10-minute live demo
 
 ---
 
-### Phase 3: Task 1 — Intentional Failure & Unknown Handling (2:00 – 3:30)
+### Phase 3: Task 1 – Intentional Failure & Unknown Handling (2:00 – 3:30)
 - **Demo Request 2 (Intentional Unknown Feature)**:
   - Query: `"How do I configure quantum teleportation cloud sync for directory listings?"`
   - Endpoint: `POST /api/v1/ask`
@@ -36,7 +36,7 @@ This walkthrough guides the evaluator through a structured <=10-minute live demo
 
 ---
 
-### Phase 4: Task 2 — Inbox Agent & Guardrailed Autonomy (3:30 – 5:30)
+### Phase 4: Task 2 – Inbox Agent & Guardrailed Autonomy (3:30 – 5:30)
 - **Action**: Navigate to `http://localhost:3000/review` (HITL Review Dashboard).
 - **Demo Flow**:
   1. **Ingest Low-Risk Inquiry**:
@@ -52,28 +52,30 @@ This walkthrough guides the evaluator through a structured <=10-minute live demo
 
 ---
 
-### Phase 5: Task 3 — Meeting Transcript to Structured Scope (5:30 – 7:30)
-- **Action**: Open Swagger at `http://localhost:8002/docs` or run CLI script.
+### Phase 5: Task 3 – Meeting Transcript to Structured Scope (5:30 – 7:30)
+- **Action**: Open Swagger at `http://localhost:8002/docs` or call `POST /api/v1/projects/from-meeting`.
 - **Demo Request**:
   - Submit initial scoping transcript:
-    `"Client wants Stripe subscription billing ($0 custom dev), 25-mile radius search ($0 custom dev), and a custom CRM webhook bridge to push leads to external HubSpot."`
+    `"Client wants Stripe subscription billing ($0 custom dev), 25-mile radius search ($0 custom dev), and external HubSpot CRM bidirectional lead syncing."`
 - **What to Highlight**:
   - Requirements Analyst extracts structured items with stable IDs (`REQ-01`, `REQ-02`, `REQ-03`).
   - Product Capability Checker queries Task 1 live:
-    - Stripe -> `NATIVE` (0.0h custom dev).
-    - Radius Search -> `NATIVE` (0.0h custom dev).
-    - Custom CRM Webhook -> `CUSTOM` (estimated via PERT 3-point: 18.0h).
+    - Stripe -> `NATIVE` (0.0h custom dev, verified via official billing doc).
+    - Radius Search -> `NATIVE` (0.0h custom dev, verified via search settings doc).
+    - HubSpot CRM -> `UNKNOWN / Discovery Spike` (Task 1 returns no indexed native support or unverified documentation).
+  - **Key Safety Distinction**: The system safely refuses to invent custom estimates for unknown external integrations, instead allocating discovery spike hours and mandating human architectural review.
   - Drafted SOW watermarked `PENDING HUMAN APPROVAL (NOT CLIENT-READY)`.
 
 ---
 
-### Phase 6: Task 3 — Follow-Up Meeting Diffing & Human Approval (7:30 – 9:00)
+### Phase 6: Task 3 – Follow-Up Meeting Diffing & Human Approval (7:30 – 9:00)
 - **Demo Request (Follow-up Call)**:
-  - Client says: `"On the CRM sync, we changed our mind: it should now only send new members one-way. Also, remove the radius search for phase 1."`
+  - Submit follow-up meeting to `POST /api/v1/projects/{id}/follow-up`:
+    `"On the CRM sync, we changed our mind: it should now only send new members one-way. Also, remove the radius search for phase 1."`
 - **What to Highlight**:
   - Diff Engine marks Radius Search as `REMOVED`.
   - CRM Integration marked as `CHANGED` with preserved constraint clause: `"one-way only and new members"`.
-  - Re-calculates PERT hours automatically.
+  - Re-calculates PERT hours and discovery allocations automatically.
   - Snapshot saved in structured `version_history`.
 - **Human Approval Gate**:
   - Call `POST /api/v1/projects/{id}/approve` with reviewer name `"Lead Solutions Architect"`.
@@ -85,8 +87,8 @@ This walkthrough guides the evaluator through a structured <=10-minute live demo
 - **On Screen**: Summary table from `EVALS.md`.
 - **Talking Points**:
   - Review 100% test pass across all 3 services:
-    - Task 1: 35 unit tests
-    - Task 2: 23 unit tests + 20 held-out benchmark evaluations
-    - Task 3: 21 unit tests + 20 held-out meeting evaluations
-    - Cross-service: 6 integration smoke tests
+    - Task 1: 35 unit tests passed in 59.09s
+    - Task 2: 23 unit tests passed in 5.68s + 20-case development evaluation suite
+    - Task 3: 21 unit tests passed in 74.27s + 20-case development evaluation suite
+    - Cross-service: 6 integration smoke tests passed in 11.90s
   - Recap why this architecture wins: zero knowledge duplication, strict autonomy safety gates, and deterministic contractual diffing.

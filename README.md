@@ -15,7 +15,7 @@ graph TD
     B -- "/api/v1/ask" --> D["Task 3: Meeting-to-Scope (Port 8002)"]
 ```
 
-1. **Task 1: Knowledge Brain (Python/FastAPI)**: Crawls Brilliant Directories support documentation, extracts DOM hierarchies and screenshots, indexes chunks with `fastembed` (`BAAI/bge-small-en-v1.5`), and serves citation-grounded RAG answers with calibrated evidence scores (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`).
+1. **Task 1: Knowledge Brain (Python/FastAPI)**: Crawls Brilliant Directories support documentation, extracts DOM hierarchies and screenshots, indexes chunks with `fastembed` (`BAAI/bge-small-en-v1.5`), and serves citation-grounded RAG answers with calibrated evidence scores (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`). Automatically bootstraps initial knowledge on clean Docker deployment.
 2. **Task 2: Inbox Agent (TypeScript/Express)**: Classifies client inquiries by risk, intent, and product area. Generates grounded email drafts. Enforces a strict 20-consecutive-approval autonomy gate for LOW-risk kinds while routing high-risk or low-confidence drafts to a browser-based HITL review portal.
 3. **Task 3: Meeting-to-Scope (Python/FastAPI)**: Multi-agent pipeline (Requirements Analyst -> Capability Checker -> Estimator -> SOW Writer) converting messy call transcripts into structured Statements of Work. Automatically diffs follow-up transcripts, flags scope creep, computes custom vs. discovery hours, and enforces mandatory human approval before marking proposals client-ready.
 
@@ -23,7 +23,7 @@ graph TD
 
 ## One-Command Startup
 
-Start all three services across the container network:
+Start all three services across the container network with automated database bootstrapping and persistent volumes:
 
 ```bash
 docker compose up --build
@@ -32,9 +32,9 @@ docker compose up --build
 ### Service Ports & Demo Entry Points
 | Service | Container Port | Host URL | Key Endpoints / UI |
 | :--- | :---: | :---: | :--- |
-| **Task 1: Knowledge Brain** | `8000` | `http://localhost:8000` | Swagger: `/docs` | Health: `/health` | Query: `POST /api/v1/ask` |
-| **Task 2: Inbox Agent** | `3000` | `http://localhost:3000` | HITL Review UI: `GET /review` | Ingest Email: `POST /api/v1/inbox/process` |
-| **Task 3: Meeting-to-Scope** | `8002` | `http://localhost:8002` | Swagger: `/docs` | Process Meeting: `POST /api/v1/projects/meeting` |
+| **Task 1: Knowledge Brain** | `8000` | `http://localhost:8000` | Swagger: `/docs`<br>Health: `/health`<br>Query: `POST /api/v1/ask`<br>Sync: `POST /api/v1/sync` |
+| **Task 2: Inbox Agent** | `3000` | `http://localhost:3000` | HITL Review UI: `GET /review`<br>Process Email: `POST /api/v1/emails/process`<br>Pending Queue: `GET /api/v1/inbox/pending` |
+| **Task 3: Meeting-to-Scope** | `8002` | `http://localhost:8002` | Swagger: `/docs`<br>Initial Meeting: `POST /api/v1/projects/from-meeting`<br>Follow-up Meeting: `POST /api/v1/projects/{id}/follow-up` |
 
 ---
 
@@ -61,24 +61,24 @@ ENABLE_DAILY_SYNC=false                # Set to true for 24h automatic sitemap r
 
 ### Unit & Integration Test Suites
 ```bash
-# Task 1 Unit & Contract Tests (35 passed)
+# Task 1 Unit & Contract Tests (35 passed in 59.09s)
 cd task-1-knowledge-brain && pytest -q
 
-# Task 2 Strict Typecheck & Unit Tests (23 passed)
+# Task 2 Strict Typecheck & Unit Tests (23 passed in 5.68s)
 cd task-2-inbox-agent && npm run typecheck && npm test
 
-# Task 3 Multi-Agent Unit Tests (21 passed)
+# Task 3 Multi-Agent Unit Tests (21 passed in 74.27s)
 cd task-3-meeting-sow && pytest -q
 
-# Root Cross-Service Integration Smoke Tests (6 passed)
-pytest tests/test_integration_smoke.py -q
+# Root Cross-Service Integration Smoke Tests (6 passed in 11.90s)
+pytest tests/test_integration_smoke.py -v
 ```
 
-### Held-Out Evaluation Suites
+### Development Evaluation Benchmark Suites
 ```bash
-# Task 2 Held-Out Benchmark (20 cases: v1 baseline vs v2 feedback-enhanced)
+# Task 2 Development Benchmark (20 cases: v1 baseline vs v2 feedback-enhanced)
 cd task-2-inbox-agent && npm run eval
 
-# Task 3 Held-Out Benchmark (20 complex multi-turn scenarios)
+# Task 3 Development Benchmark (20 multi-turn requirement scoping cases)
 cd task-3-meeting-sow && python -m evals.eval_runner
 ```
