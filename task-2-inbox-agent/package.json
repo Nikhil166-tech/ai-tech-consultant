@@ -9,7 +9,8 @@
     "start": "tsx src/index.ts",
     "test": "vitest run --config vitest.config.ts",
     "eval": "tsx evals/eval_runner.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/index.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

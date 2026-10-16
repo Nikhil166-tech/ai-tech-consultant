@@ -1,4 +1,5 @@
 ﻿import { Task1AskResponse } from "../types/index.js";
+import { Task1AskResponseSchema } from "../validation/schemas.js";
 
 export interface Task1ClientOptions {
   baseUrl?: string;
@@ -13,6 +14,10 @@ export interface Task1ClientResult {
   fallbackReason?: string;
 }
 
+/**
+ * Typed HTTP REST client for querying the Task 1 Knowledge Brain API.
+ * Features configurable timeout, graceful offline fallback, and strict Zod contract validation.
+ */
 export class Task1KnowledgeClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
@@ -52,17 +57,21 @@ export class Task1KnowledgeClient {
         };
       }
 
-      const data = (await res.json()) as Task1AskResponse;
+      const rawData = await res.json();
 
-      // Validate required contract fields
-      if (typeof data.answer !== "string" || !Array.isArray(data.citations)) {
+      // Strict Zod schema validation
+      const parseResult = Task1AskResponseSchema.safeParse(rawData);
+      if (!parseResult.success) {
+        const errorDetails = parseResult.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ");
         return {
           success: false,
           isAvailable: true,
           needsHumanEscalation: true,
-          fallbackReason: "Task 1 response failed contract schema validation"
+          fallbackReason: `Task 1 response failed contract schema validation (${errorDetails})`
         };
       }
+
+      const data = parseResult.data as Task1AskResponse;
 
       // Check evidence confidence
       const needsHumanEscalation =

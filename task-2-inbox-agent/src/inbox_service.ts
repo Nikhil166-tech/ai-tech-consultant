@@ -3,13 +3,23 @@
   ProcessingResult,
   HumanReviewRecord,
   ReviewAction,
-  DraftReply
+  InteractionRecord,
+  AutomaticDeliveryRecord
 } from "./types/index.js";
+import { CustomerEmailSchema, ReviewSubmissionSchema } from "./validation/schemas.js";
 import { EmailClassifier } from "./classification/classifier.js";
 import { Task1KnowledgeClient } from "./knowledge/task1_client.js";
 import { DraftGenerator } from "./drafting/generator.js";
 import { AutonomyEngine } from "./autonomy/engine.js";
 import { FeedbackStore } from "./feedback/store.js";
+import { InteractionStore } from "./storage/interaction_store.js";
+
+export interface ReviewSubmission {
+  action: ReviewAction;
+  reviewerId: string;
+  finalReply?: string;
+  notes?: string;
+}
 
 export class InboxService {
   public readonly classifier: EmailClassifier;
@@ -17,76 +27,118 @@ export class InboxService {
   public readonly draftGenerator: DraftGenerator;
   public readonly autonomyEngine: AutonomyEngine;
   public readonly feedbackStore: FeedbackStore;
-
-  private pendingDrafts: Map<string, { email: CustomerEmail; draft: DraftReply; kindKey: string }> = new Map();
+  public readonly interactionStore: InteractionStore;
 
   constructor(options?: {
     knowledgeClient?: Task1KnowledgeClient;
     autonomyEngine?: AutonomyEngine;
     feedbackStore?: FeedbackStore;
+    interactionStore?: InteractionStore;
   }) {
     this.classifier = new EmailClassifier();
     this.knowledgeClient = options?.knowledgeClient || new Task1KnowledgeClient();
     this.feedbackStore = options?.feedbackStore || new FeedbackStore();
+    this.interactionStore = options?.interactionStore || new InteractionStore();
     this.draftGenerator = new DraftGenerator({ feedbackStore: this.feedbackStore });
     this.autonomyEngine = options?.autonomyEngine || new AutonomyEngine();
   }
 
   public async processEmail(
-    email: CustomerEmail,
+    rawEmail: unknown,
     version: "v1_baseline" | "v2_feedback_enhanced" = "v1_baseline"
   ): Promise<ProcessingResult> {
-    // 1. Classification
+    // 1. Runtime validation
+    const parsed = CustomerEmailSchema.safeParse(rawEmail);
+    if (!parsed.success) {
+      throw new Error(`Invalid email payload: ${parsed.error.errors.map((e) => e.message).join(", ")}`);
+    }
+    const email: CustomerEmail = parsed.data;
+
+    // 2. Classification
     const classification = this.classifier.classify(email);
     const kind = classification.kind;
 
-    // 2. Query Task 1 Knowledge Brain (only if not an injection / high-risk security issue)
+    // 3. Query Task 1 Knowledge Brain (bypassed if prompt injection is detected)
     let knowledgeResponse;
+    let task1Success = false;
+    let task1Available = false;
+    let fallbackReason: string | undefined;
+
     if (!classification.riskFlags.includes("PROMPT_INJECTION_DETECTED")) {
       const kResult = await this.knowledgeClient.askKnowledgeBrain(
         `${email.subject}. ${email.body}`,
-        kind.productArea !== "UNKNOWN" ? kind.productArea : undefined
+        undefined
       );
       knowledgeResponse = kResult.response;
+      task1Success = kResult.success;
+      task1Available = kResult.isAvailable;
+      fallbackReason = kResult.fallbackReason;
+
       if (kResult.needsHumanEscalation) {
         classification.requiresHumanReview = true;
       }
+    } else {
+      classification.requiresHumanReview = true;
+      fallbackReason = "Security prompt injection detected; knowledge query bypassed";
     }
 
-    // 3. Generate Draft
+    // 4. Generate Draft
     const draft = await this.draftGenerator.generateDraft(email, classification, knowledgeResponse, version);
 
-    // 4. Autonomy Policy Gating
+    // 5. Autonomy Policy Gating
     const canAuto = this.autonomyEngine.canAutoSend(kind) && draft.autoSendEligible;
     const currentAutonomyState = this.autonomyEngine.getState(kind.key);
 
     let routedTo: "AUTO_SENT" | "HUMAN_REVIEW_QUEUE" = "HUMAN_REVIEW_QUEUE";
     let finalSentReply: string | undefined;
 
+    const interactionId = draft.id;
+    const now = new Date().toISOString();
+
     if (canAuto) {
       routedTo = "AUTO_SENT";
       finalSentReply = draft.body;
 
-      // Record autonomous delivery as an unchanged auto-approved event
-      const autoRecord: HumanReviewRecord = {
+      // CRITICAL: An automatic send is recorded into auto-delivery store.
+      // It NEVER creates a human review record and NEVER increments unchanged streak.
+      const deliveryRecord: AutomaticDeliveryRecord = {
         id: `auto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        interactionId,
         emailId: email.id,
         draftId: draft.id,
         kindKey: kind.key,
-        action: "APPROVE",
-        originalDraft: draft.body,
-        finalSentReply: draft.body,
-        wasUnchanged: true,
-        reviewerId: "system_autonomous_agent",
-        reviewedAt: new Date().toISOString(),
-        notes: "Autonomous send executed (streak >= 20, LOW risk)"
+        sentReply: draft.body,
+        sentAt: now,
+        promptVersion: version
       };
-      this.feedbackStore.saveReviewRecord(autoRecord);
-      this.autonomyEngine.recordReview(autoRecord);
-    } else {
-      // Retain in pending queue for human review
-      this.pendingDrafts.set(email.id, { email, draft, kindKey: kind.key });
+
+      this.interactionStore.recordAutoDelivery(deliveryRecord);
+      this.autonomyEngine.recordAutoDelivery(deliveryRecord);
     }
+
+    // 6. Persist complete interaction record
+    const interaction: InteractionRecord = {
+      id: interactionId,
+      email,
+      classification,
+      task1Status: {
+        success: task1Success,
+        isAvailable: task1Available,
+        evidenceScore: knowledgeResponse?.evidence_score ?? 0,
+        evidenceStatus: knowledgeResponse?.evidence_status ?? "NONE",
+        needsHumanReview: classification.requiresHumanReview,
+        fallbackReason
+      },
+      draft,
+      promptVersion: version,
+      routingDecision: routedTo,
+      status: routedTo === "AUTO_SENT" ? "AUTO_SENT" : "PENDING_REVIEW",
+      finalSentReply,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.interactionStore.saveInteraction(interaction);
 
     return {
       email,
@@ -95,50 +147,111 @@ export class InboxService {
       draft,
       routedTo,
       autonomyState: currentAutonomyState,
+      interactionId,
       finalSentReply
     };
   }
 
-  public reviewDraft(
-    emailId: string,
-    action: ReviewAction,
-    finalReply?: string,
-    reviewerId: string = "human_operator_1",
-    notes?: string
-  ): HumanReviewRecord {
-    const pending = this.pendingDrafts.get(emailId);
-    if (!pending) {
-      throw new Error(`No pending draft found for email ID: ${emailId}`);
-    }
-
-    const { draft, kindKey } = pending;
-    const sentText = action === "APPROVE" ? draft.body : (finalReply || draft.body);
-
-    const wasUnchanged = action === "APPROVE" && this.autonomyEngine.isUnchanged(draft.body, sentText);
-
-    const record: HumanReviewRecord = {
-      id: `rev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      emailId,
-      draftId: draft.id,
-      kindKey,
-      action,
-      originalDraft: draft.body,
-      finalSentReply: sentText,
-      wasUnchanged,
-      diffSummary: wasUnchanged ? "Zero changes" : `Modified by ${reviewerId}`,
-      reviewerId,
-      reviewedAt: new Date().toISOString(),
-      notes
-    };
-
-    this.feedbackStore.saveReviewRecord(record);
-    this.autonomyEngine.recordReview(record);
-    this.pendingDrafts.delete(emailId);
-
-    return record;
+  public getPendingReviews(): InteractionRecord[] {
+    return this.interactionStore.getPendingInteractions();
   }
 
-  public getPendingDrafts(): Array<{ email: CustomerEmail; draft: DraftReply; kindKey: string }> {
-    return Array.from(this.pendingDrafts.values());
+  public getInteraction(id: string): InteractionRecord | undefined {
+    return this.interactionStore.getInteraction(id);
+  }
+
+  public submitReview(
+    interactionId: string,
+    rawSubmission: unknown
+  ): { interaction: InteractionRecord; reviewRecord: HumanReviewRecord } {
+    // 1. Validate submission
+    const parseResult = ReviewSubmissionSchema.safeParse(rawSubmission);
+    if (!parseResult.success) {
+      throw new Error(`Invalid review submission: ${parseResult.error.errors.map((e) => e.message).join(", ")}`);
+    }
+    const submission: ReviewSubmission = parseResult.data;
+
+    // 2. Fetch pending interaction
+    const interaction = this.interactionStore.getInteraction(interactionId);
+    if (!interaction) {
+      throw new Error(`Interaction '${interactionId}' not found`);
+    }
+
+    if (interaction.status !== "PENDING_REVIEW") {
+      throw new Error(`Interaction '${interactionId}' is already resolved (${interaction.status})`);
+    }
+
+    const now = new Date().toISOString();
+    let finalSentReply: string | undefined;
+    let wasUnchanged = false;
+    let diffSummary: string | undefined;
+
+    if (submission.action === "APPROVE") {
+      finalSentReply = interaction.draft.body;
+      wasUnchanged = true;
+    } else if (submission.action === "EDIT") {
+      if (!submission.finalReply || submission.finalReply.trim().length === 0) {
+        throw new Error("EDIT action requires a non-empty finalReply");
+      }
+      if (this.autonomyEngine.isUnchanged(interaction.draft.body, submission.finalReply)) {
+        throw new Error("EDIT requires finalReply to differ from draft. For unchanged drafts, select APPROVE.");
+      }
+      finalSentReply = submission.finalReply;
+      wasUnchanged = false;
+      diffSummary = `Modified length ${interaction.draft.body.length} -> ${submission.finalReply.length}`;
+    } else if (submission.action === "REJECT") {
+      // CRITICAL Requirement 12: REJECT must not populate finalSentReply
+      finalSentReply = undefined;
+      wasUnchanged = false;
+      diffSummary = submission.notes || "Draft rejected by human reviewer";
+    }
+
+    // 3. Create HumanReviewRecord
+    const reviewRecord: HumanReviewRecord = {
+      id: `rev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      emailId: interaction.email.id,
+      draftId: interaction.draft.id,
+      kindKey: interaction.classification.kind.key,
+      action: submission.action,
+      originalDraft: interaction.draft.body,
+      finalSentReply,
+      wasUnchanged,
+      diffSummary,
+      reviewerId: submission.reviewerId,
+      reviewedAt: now,
+      notes: submission.notes
+    };
+
+    // 4. Update Autonomy Engine with human review action
+    this.autonomyEngine.recordHumanReview(reviewRecord);
+
+    // 5. Update Feedback Store for continuous learning
+    this.feedbackStore.saveReviewRecord(reviewRecord);
+
+    // 6. Update Interaction Store
+    const newStatus =
+      submission.action === "APPROVE" ? "APPROVED" : submission.action === "EDIT" ? "EDITED" : "REJECTED";
+
+    this.interactionStore.updateReviewStatus(
+      interactionId,
+      newStatus,
+      submission.action,
+      finalSentReply,
+      submission.reviewerId,
+      submission.notes
+    );
+
+    interaction.status = newStatus;
+    interaction.reviewAction = submission.action;
+    interaction.finalSentReply = finalSentReply;
+    interaction.reviewerId = submission.reviewerId;
+    interaction.reviewedAt = now;
+    interaction.reviewNotes = submission.notes;
+
+    return { interaction, reviewRecord };
+  }
+
+  public revokeAutonomy(kindKey: string, reason: string, revokedBy?: string) {
+    return this.autonomyEngine.revokeAutonomy(kindKey, reason, revokedBy);
   }
 }

@@ -12,3 +12,5 @@ dist/
 task-2-inbox-agent/data/test_*.json
 task-2-inbox-agent/data/autonomy_store.json
 task-2-inbox-agent/data/feedback_store.json
+task-2-inbox-agent/data/interactions.json
+task-2-inbox-agent/data/auto_deliveries.json

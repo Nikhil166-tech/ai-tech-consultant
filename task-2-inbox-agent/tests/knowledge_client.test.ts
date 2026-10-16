@@ -1,28 +1,64 @@
-﻿import { describe, it, expect, vi } from "vitest";
+﻿import { describe, it, expect, vi, afterEach } from "vitest";
 import { Task1KnowledgeClient } from "../src/knowledge/task1_client.js";
 
 describe("Task1KnowledgeClient", () => {
-  it("handles network timeout without throwing unhandled exceptions", async () => {
-    // Port 9999 with 50ms timeout to simulate unreachable/timeout
-    const client = new Task1KnowledgeClient({ baseUrl: "http://127.0.0.1:9999", timeoutMs: 50 });
-    const result = await client.askKnowledgeBrain("How do I setup Stripe?");
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
+  it("handles Task 1 timeout gracefully without throwing unhandled exceptions", async () => {
+    const client = new Task1KnowledgeClient({ baseUrl: "http://127.0.0.1:9999", timeoutMs: 30 });
+    
+    // Simulate abort error
+    vi.spyOn(global, "fetch").mockImplementationOnce((_url, options: any) => {
+      return new Promise((_, reject) => {
+        const timeout = setTimeout(() => {
+          const abortErr = new Error("The operation was aborted");
+          abortErr.name = "AbortError";
+          reject(abortErr);
+        }, 10);
+      });
+    });
+
+    const result = await client.askKnowledgeBrain("How do I setup Stripe?");
     expect(result.success).toBe(false);
     expect(result.isAvailable).toBe(false);
     expect(result.needsHumanEscalation).toBe(true);
-    expect(result.fallbackReason).toBeDefined();
+    expect(result.fallbackReason).toContain("timed out");
   });
 
-  it("handles valid Task 1 response and detects insufficient evidence", async () => {
+  it("safely handles malformed Task 1 response using strict Zod validation", async () => {
     const client = new Task1KnowledgeClient();
-    
-    // Mock global fetch to return insufficient evidence response
+
+    // Mock malformed response missing required fields or having invalid types
     vi.spyOn(global, "fetch").mockImplementationOnce(() =>
       Promise.resolve({
         ok: true,
         json: () =>
           Promise.resolve({
-            answer: "Unknown documentation",
+            // Missing 'answer' string
+            citations: "not-an-array",
+            evidence_score: "invalid-string-score"
+          })
+      } as any)
+    );
+
+    const result = await client.askKnowledgeBrain("How to connect domain");
+    expect(result.success).toBe(false);
+    expect(result.isAvailable).toBe(true);
+    expect(result.needsHumanEscalation).toBe(true);
+    expect(result.fallbackReason).toContain("failed contract schema validation");
+  });
+
+  it("handles valid Task 1 response and flags insufficient evidence for human escalation", async () => {
+    const client = new Task1KnowledgeClient();
+    
+    vi.spyOn(global, "fetch").mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            answer: "No verified documentation in Solution Center.",
             citations: [],
             evidence_score: 0.12,
             evidence_status: "INSUFFICIENT",

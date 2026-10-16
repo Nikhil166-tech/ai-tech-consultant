@@ -20,7 +20,8 @@ export class EmailClassifier {
       text.includes("you are now dan") ||
       text.includes("reply with") ||
       text.includes("bypass security") ||
-      text.includes("bypass payment")
+      text.includes("bypass payment") ||
+      text.includes("jailbreak")
     ) {
       riskFlags.push("PROMPT_INJECTION_DETECTED");
     }
@@ -99,30 +100,26 @@ export class EmailClassifier {
     let productArea = ProductArea.UNKNOWN;
     if (
       riskFlags.includes("ACCOUNT_SECURITY_COMPROMISE") ||
-      riskFlags.includes("PROMPT_INJECTION_DETECTED") ||
       text.includes("2fa") ||
-      text.includes("login attempt") ||
-      text.includes("admin owner email")
+      text.includes("login security") ||
+      text.includes("admin password")
     ) {
       productArea = ProductArea.ACCOUNT_SECURITY;
     } else if (
       text.includes("stripe") ||
       text.includes("paypal") ||
       text.includes("payment gateway") ||
-      text.includes("publishable key") ||
-      text.includes("credit card") ||
-      text.includes("coupon code") ||
-      text.includes("coupon codes") ||
-      text.includes("discount") ||
-      text.includes("promo code")
+      text.includes("coupon") ||
+      text.includes("discount code") ||
+      text.includes("transaction fee")
     ) {
       productArea = ProductArea.PAYMENTS_GATEWAYS;
     } else if (
       text.includes("membership plan") ||
-      text.includes("recurring") ||
-      text.includes("tier") ||
       text.includes("subscription plan") ||
-      text.includes("member profile badge") ||
+      text.includes("pricing tier") ||
+      text.includes("recurring") ||
+      text.includes("upgrade plan") ||
       text.includes("verified badge") ||
       text.includes("verified badges")
     ) {
@@ -158,6 +155,28 @@ export class EmailClassifier {
       text.includes("zip code")
     ) {
       productArea = ProductArea.SEARCH_LOCATIONS;
+    } else if (
+      text.includes("analytics") ||
+      text.includes("ga4") ||
+      text.includes("google analytics") ||
+      text.includes("tracking code") ||
+      text.includes("measurement id")
+    ) {
+      productArea = ProductArea.ANALYTICS_TRACKING;
+    } else if (
+      text.includes("export") ||
+      text.includes("csv") ||
+      text.includes("import members") ||
+      text.includes("member data") ||
+      text.includes("export member data")
+    ) {
+      productArea = ProductArea.MEMBER_EXPORT_IMPORT;
+    } else if (
+      text.includes("claim") ||
+      text.includes("claimable") ||
+      text.includes("claim listing")
+    ) {
+      productArea = ProductArea.LISTINGS_MANAGEMENT;
     }
 
     // 5. Determine Intent
@@ -228,11 +247,9 @@ export class EmailClassifier {
         productArea,
         key: kindKey
       },
-      confidence: riskFlags.length > 0 ? 0.95 : 0.90,
+      confidence: riskFlags.length > 0 ? 0.98 : 0.90,
       urgency,
-      reasoning: riskFlags.length > 0
-        ? `High-risk triggers detected: [${riskFlags.join(", ")}]. Explicit human oversight required.`
-        : `Classified as ${intent} in domain ${productArea} with low risk profile.`,
+      reasoning: `Classified as ${intent} (${productArea}) at ${riskLevel} risk level. Flags: [${riskFlags.join(", ")}]`,
       requiresHumanReview,
       riskFlags
     };

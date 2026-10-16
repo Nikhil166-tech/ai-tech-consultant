@@ -22,6 +22,9 @@ export enum ProductArea {
   EMAIL_TEMPLATES = "EMAIL_TEMPLATES",
   FORMS_RECAPTCHA = "FORMS_RECAPTCHA",
   SEARCH_LOCATIONS = "SEARCH_LOCATIONS",
+  ANALYTICS_TRACKING = "ANALYTICS_TRACKING",
+  MEMBER_EXPORT_IMPORT = "MEMBER_EXPORT_IMPORT",
+  LISTINGS_MANAGEMENT = "LISTINGS_MANAGEMENT",
   ACCOUNT_SECURITY = "ACCOUNT_SECURITY",
   UNKNOWN = "UNKNOWN"
 }
@@ -106,12 +109,50 @@ export interface HumanReviewRecord {
   kindKey: string;
   action: ReviewAction;
   originalDraft: string;
-  finalSentReply: string;
+  finalSentReply?: string; // undefined if REJECT
   wasUnchanged: boolean;
   diffSummary?: string;
   reviewerId: string;
   reviewedAt: string;
   notes?: string;
+}
+
+export interface AutomaticDeliveryRecord {
+  id: string;
+  interactionId: string;
+  emailId: string;
+  draftId: string;
+  kindKey: string;
+  sentReply: string;
+  sentAt: string;
+  promptVersion: "v1_baseline" | "v2_feedback_enhanced";
+}
+
+export type InteractionStatus = "PENDING_REVIEW" | "AUTO_SENT" | "APPROVED" | "EDITED" | "REJECTED";
+
+export interface InteractionRecord {
+  id: string; // matches draft.id or email.id
+  email: CustomerEmail;
+  classification: EmailClassification;
+  task1Status: {
+    success: boolean;
+    isAvailable: boolean;
+    evidenceScore: number;
+    evidenceStatus: string;
+    needsHumanReview: boolean;
+    fallbackReason?: string;
+  };
+  draft: DraftReply;
+  promptVersion: "v1_baseline" | "v2_feedback_enhanced";
+  routingDecision: "AUTO_SENT" | "HUMAN_REVIEW_QUEUE";
+  status: InteractionStatus;
+  finalSentReply?: string;
+  reviewAction?: ReviewAction;
+  reviewerId?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AutonomyState {
@@ -121,7 +162,15 @@ export interface AutonomyState {
   totalDrafts: number;
   totalSentWithoutChanges: number;
   lastFailureReason?: string;
+  lastRevokedReason?: string;
+  revokedAt?: string;
   updatedAt: string;
+}
+
+export interface AutonomyRevocationRequest {
+  kindKey: string;
+  reason: string;
+  revokedBy?: string;
 }
 
 export interface ProcessingResult {
@@ -131,5 +180,6 @@ export interface ProcessingResult {
   draft: DraftReply;
   routedTo: "AUTO_SENT" | "HUMAN_REVIEW_QUEUE";
   autonomyState: AutonomyState;
+  interactionId: string;
   finalSentReply?: string;
 }

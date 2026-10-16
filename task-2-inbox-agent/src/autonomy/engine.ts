@@ -3,8 +3,10 @@ import path from "path";
 import {
   KindTuple,
   RiskLevel,
+  ProductArea,
   AutonomyState,
-  HumanReviewRecord
+  HumanReviewRecord,
+  AutomaticDeliveryRecord
 } from "../types/index.js";
 
 export class AutonomyEngine {
@@ -56,24 +58,40 @@ export class AutonomyEngine {
     return { ...fresh };
   }
 
+  /**
+   * Autonomy gating rule:
+   * 1. Must be LOW risk.
+   * 2. Product area UNKNOWN must NEVER unlock autonomy.
+   * 3. Autonomy must be enabled and backed by at least 20 consecutive unchanged human approvals.
+   */
   public canAutoSend(kind: KindTuple): boolean {
     if (kind.riskLevel !== RiskLevel.LOW) {
+      return false;
+    }
+    if (kind.productArea === ProductArea.UNKNOWN) {
       return false;
     }
     const state = this.getState(kind.key);
     return state.autonomyEnabled && state.unchangedStreak >= 20;
   }
 
-  public recordReview(review: HumanReviewRecord): AutonomyState {
+  /**
+   * Records a HUMAN review action.
+   * Only human approvals can increment the 20-approval streak.
+   */
+  public recordHumanReview(review: HumanReviewRecord): AutonomyState {
     const state = this.getState(review.kindKey);
     state.totalDrafts += 1;
     state.updatedAt = new Date().toISOString();
+
+    const isUnknownProductArea = review.kindKey.endsWith(`:${ProductArea.UNKNOWN}`);
 
     if (review.action === "APPROVE" && review.wasUnchanged) {
       state.unchangedStreak += 1;
       state.totalSentWithoutChanges += 1;
 
-      if (state.unchangedStreak >= 20) {
+      // UNKNOWN product area must never unlock autonomy
+      if (state.unchangedStreak >= 20 && !isUnknownProductArea) {
         state.autonomyEnabled = true;
         state.lastFailureReason = undefined;
       }
@@ -97,11 +115,37 @@ export class AutonomyEngine {
     return { ...state };
   }
 
-  public revokeAutonomy(kindKey: string, reason: string): AutonomyState {
+  // Alias for backward compatibility in tests
+  public recordReview(review: HumanReviewRecord): AutonomyState {
+    return this.recordHumanReview(review);
+  }
+
+  /**
+   * Records an AUTOMATIC delivery.
+   * CRITICAL: An automatic send NEVER counts as a human approval and does NOT increase unchanged streak.
+   */
+  public recordAutoDelivery(delivery: AutomaticDeliveryRecord): AutonomyState {
+    const state = this.getState(delivery.kindKey);
+    state.totalDrafts += 1;
+    state.totalSentWithoutChanges += 1;
+    // Streak is intentionally NOT incremented
+    state.updatedAt = new Date().toISOString();
+    this.stateMap.set(delivery.kindKey, state);
+    this.saveState();
+    return { ...state };
+  }
+
+  /**
+   * Explicit quality audit revocation pathway.
+   * Immediately resets autonomyEnabled to false and streak to 0 with failure reason persisted.
+   */
+  public revokeAutonomy(kindKey: string, reason: string, revokedBy?: string): AutonomyState {
     const state = this.getState(kindKey);
     state.autonomyEnabled = false;
     state.unchangedStreak = 0;
     state.lastFailureReason = reason;
+    state.lastRevokedReason = `${reason}${revokedBy ? ` (by ${revokedBy})` : ""}`;
+    state.revokedAt = new Date().toISOString();
     state.updatedAt = new Date().toISOString();
     this.stateMap.set(kindKey, state);
     this.saveState();
