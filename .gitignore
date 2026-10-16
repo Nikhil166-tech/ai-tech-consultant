@@ -9,3 +9,6 @@ __pycache__/
 node_modules/
 dist/
 .DS_Store
+task-2-inbox-agent/data/test_*.json
+task-2-inbox-agent/data/autonomy_store.json
+task-2-inbox-agent/data/feedback_store.json

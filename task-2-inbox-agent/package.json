@@ -1,0 +1,28 @@
+{
+  "name": "task-2-inbox-agent",
+  "version": "1.0.0",
+  "description": "Business Labs AI Tech Consultant - Task 2 Inbox Agent with Autonomous Guardrails & HITL Feedback Loop",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "test": "vitest run --config vitest.config.ts",
+    "eval": "tsx evals/eval_runner.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
