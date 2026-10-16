@@ -29,7 +29,7 @@ Start all three services across the container network with automated database bo
 docker compose up --build
 ```
 
-> **Deployment Note**: Docker Compose configuration has been statically reviewed, dependency-chained, and configured with persistent volumes (`task1-data`, `task2-data`, `task3-data`). Because Docker Desktop Linux daemon was unavailable in this Windows environment, full end-to-end integration was empirically verified live across local host ports (`8000`, `3000`, `8002`); container runtime execution should be validated once the Docker daemon is active.
+> **Deployment Verification**: Clean multi-container startup has been verified with `docker compose down -v` followed by `docker compose up --build`. Task 1 (`task1-knowledge-brain`) became healthy within its FastEmbed cold-start healthcheck window, `task1-bootstrap` completed successfully (`added=25`, 25 articles, 31 chunks) and exited with code 0, Task 2 (`task2-inbox-agent`) started successfully on port 3000, Task 3 (`task3-meeting-sow`) started successfully on port 8002, and `/health` returned healthy for all three services.
 
 ### Service Ports & Demo Entry Points
 | Service | Container Port | Host URL | Key Endpoints / UI |

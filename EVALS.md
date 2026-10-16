@@ -100,8 +100,12 @@ Total Benchmark Cases: 20
 ## 4. Known Limitations & Environment Notes
 
 1. **Docker Runtime Verification Status**:
-   - Docker Compose configuration and container Dockerfiles have been statically reviewed and validated for syntax, dependency chains, and persistent volume paths.
-   - Because Docker Desktop Linux daemon was unavailable in this Windows shell session (`open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified`), multi-container runtime execution was simulated and verified directly against local running service processes. Full Docker container execution should be validated once the daemon is available.
+   - Clean multi-container deployment was verified end-to-end via `docker compose down -v` followed by `docker compose up --build`.
+   - Task 1 (`task1-knowledge-brain`) became healthy on port 8000.
+   - `task1-bootstrap` completed successfully with `added=25` (25 articles, 31 chunks) and exited with code 0.
+   - Task 2 (`task2-inbox-agent`) started successfully on port 3000.
+   - Task 3 (`task3-meeting-sow`) started successfully on port 8002.
+   - `/health` returned healthy for all three services.
 2. **Task 1 Corpus Boundary Constraints**:
    - The Task 1 SQLite database performs a bounded bootstrap of up to 25 sitemap pages (indexing 25 articles and 31 chunks) from the official Brilliant Directories Solution Center.
    - When customer inquiries or meeting transcripts reference features outside these 25 articles (such as external third-party CRM tools, HubSpot, or custom webhook bridges), Task 1 correctly returns `is_known=False` / `evidence_status="NONE"`.
