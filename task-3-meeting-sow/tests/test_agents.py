@@ -90,6 +90,7 @@ async def test_capability_checker_zero_knowledge_duplication():
         evidence_score=0.95,
         evidence_status="STRONG",
         is_known=True,
+        needs_human_review=False,
     )
 
     with patch.object(client, "query_capability", new_callable=AsyncMock) as mock_query:
@@ -126,6 +127,7 @@ async def test_capability_checker_partial_native_plus_custom():
         ],
         is_known=True,
         evidence_status="STRONG",
+        needs_human_review=False,
     )
 
     with patch.object(client, "query_capability", new_callable=AsyncMock) as mock_query:

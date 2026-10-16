@@ -81,4 +81,57 @@ async def test_task1_insufficient_evidence():
         assert result.is_available is True
         # Must preserve uncertainty as UNKNOWN!
         assert result.inferred_capability == CapabilityStatus.UNKNOWN
-        assert "insufficient verified documentation" in result.error_reason
+        assert "insufficient verified documentation" in result.error_reason
+
+
+
+@pytest.mark.asyncio
+async def test_task1_needs_human_review_preserves_unknown():
+    from app.agents.capability_checker import ProductCapabilityCheckerAgent
+    from app.models import RequirementItem
+
+    client = Task1MeetingClient()
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "answer": "Stripe is supported via Finance Settings.",
+                "citations": [
+                    {
+                        "url": "https://support.brilliantdirectories.com/support/solutions/12000001520",
+                        "title": "Payment Gateway Settings",
+                        "category": "Finance",
+                        "folder": "Finance",
+                        "section_heading": "Payment Gateways",
+                        "snippet": "Connect Stripe in Finance Settings to accept payments.",
+                        "source_type": "OFFICIAL_DOC",
+                        "provenance_notes": None,
+                    }
+                ],
+                "evidence_score": 0.95,
+                "evidence_status": "STRONG",
+                "is_known": True,
+                "needs_human_review": True,
+            }
+
+    async def mock_post(*args, **kwargs):
+        return MockResponse()
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post):
+        # 1. Direct Task1MeetingClient query assertion
+        result = await client.query_capability("Stripe Gateway")
+        assert result.inferred_capability == CapabilityStatus.UNKNOWN
+        assert result.error_reason is not None
+        assert "human verification" in result.error_reason
+
+        # 2. ProductCapabilityCheckerAgent pipeline assertion
+        checker = ProductCapabilityCheckerAgent(task1_client=client, api_key=None)
+        req = RequirementItem(
+            id="REQ-01",
+            title="Stripe Payment Processing",
+            description="Accept credit card payments via Stripe gateway",
+        )
+        evaluated = await checker.evaluate_requirement(req)
+        assert evaluated.capability_status == CapabilityStatus.UNKNOWN
+        assert "human verification" in evaluated.native_alternative_notes

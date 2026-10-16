@@ -72,6 +72,15 @@ class Task1MeetingClient:
                     inferred_capability=CapabilityStatus.UNKNOWN,
                 )
 
+            if task1_data.needs_human_review:
+                return Task1ClientResult(
+                    success=True,
+                    is_available=True,
+                    response=task1_data,
+                    error_reason="Task 1 requires human verification before capability classification",
+                    inferred_capability=CapabilityStatus.UNKNOWN,
+                )
+
             return Task1ClientResult(
                 success=True,
                 is_available=True,

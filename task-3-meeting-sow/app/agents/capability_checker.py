@@ -57,8 +57,8 @@ class ProductCapabilityCheckerAgent:
             if full_res.success and full_res.response and full_res.response.citations:
                 result = full_res
 
-        # 1. If Task 1 is unavailable, timed out, or had insufficient evidence
-        if not result.success or not result.response or not result.response.is_known:
+        # 1. If Task 1 is unavailable, timed out, had insufficient evidence, or requires human review
+        if not result.success or not result.response or not result.response.is_known or result.response.needs_human_review:
             requirement.capability_status = CapabilityStatus.UNKNOWN
             requirement.citations = []
             requirement.native_alternative_notes = (
