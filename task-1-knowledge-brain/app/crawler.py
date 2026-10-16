@@ -133,7 +133,8 @@ class PoliteCrawler:
     ) -> Tuple[Optional[Article], str]:
         """
         Crawls a single article. Returns (Article or None, classification)
-        classification is one of: 'NEW', 'CHANGED', 'UNCHANGED', 'ERROR'
+        classification is one of: 'NEW', 'CHANGED', 'UNCHANGED', 'ERROR'.
+        Requirement 4: force=True forces re-chunking and re-embedding even when content_hash matches.
         """
         existing = self.db.get_article(url)
 
@@ -196,7 +197,7 @@ class PoliteCrawler:
 
                     # Precise Classification: NEW, CHANGED, UNCHANGED
                     classification = "NEW"
-                    if existing:
+                    if existing and not force:
                         if existing.content_hash == new_content_hash:
                             classification = "UNCHANGED"
                             self.db.save_crawler_checkpoint(
@@ -209,6 +210,8 @@ class PoliteCrawler:
                             return existing, classification
                         else:
                             classification = "CHANGED"
+                    elif existing and force:
+                        classification = "CHANGED"
 
                     article = Article(
                         url=url,
@@ -236,7 +239,7 @@ class PoliteCrawler:
                         content_hash=new_content_hash
                     )
 
-                    logger.info(f"Successfully processed {classification} article: {url} ({len(chunks)} chunks, {len(images)} images)")
+                    logger.info(f"Successfully processed {classification} article (force={force}): {url} ({len(chunks)} chunks, {len(images)} images)")
                     return article, classification
 
             except Exception as e:
@@ -410,12 +413,13 @@ class PoliteCrawler:
         full_article_text = "\n\n".join(full_text_blocks)
         return chunks, all_images, full_article_text
 
-    async def sync_daily(self, max_pages: Optional[int] = None) -> SyncReport:
+    async def sync_daily(self, max_pages: Optional[int] = None, force: bool = False) -> SyncReport:
         """
-        Sitemap synchronization with strict deletion safety.
+        Sitemap synchronization with strict deletion safety and optional force reindex.
         Requirement 3: Explicitly checks is_complete. If root or any child sitemap fails,
         is_complete is False. Zero deletions are performed, but retrieved entries are
         safely ingested/updated.
+        Requirement 4: force=True forces reprocessing/re-embedding of all processed entries.
         """
         start_time = datetime.now(timezone.utc)
         self.db.set_sync_status(SyncStatus(
@@ -454,7 +458,7 @@ class PoliteCrawler:
 
         self.db.set_sync_status(SyncStatus(
             status="running",
-            current_step=f"Processing {len(crawl_entries)} URLs",
+            current_step=f"Processing {len(crawl_entries)} URLs (force={force})",
             total_sitemap_urls=total_in_sitemap,
             pages_crawled=0,
             updated_at=datetime.now(timezone.utc).isoformat()
@@ -464,7 +468,7 @@ class PoliteCrawler:
         for entry in crawl_entries:
             url = entry["url"]
             lastmod = entry.get("lastmod")
-            tasks.append(self.crawl_article(url, lastmod))
+            tasks.append(self.crawl_article(url, lastmod, force=force))
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)

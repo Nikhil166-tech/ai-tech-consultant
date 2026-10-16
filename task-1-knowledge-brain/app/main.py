@@ -1,7 +1,9 @@
-import os
+﻿import os
+import asyncio
 import logging
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -20,10 +22,51 @@ from app.config import settings
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("knowledge_brain")
 
+db = Database(db_path=settings.knowledge_db_path)
+vision = VisionAnalyzer()
+crawler = PoliteCrawler(db=db, vision_analyzer=vision)
+rag_engine = HybridRAGEngine(db=db)
+
+# Lightweight background sync loop (no heavy message queues or Redis)
+_daily_sync_task: Optional[asyncio.Task] = None
+
+async def _daily_sync_loop():
+    interval_seconds = settings.sync_interval_hours * 3600.0
+    logger.info(f"Daily sync worker started. Scheduled every {settings.sync_interval_hours}h ({interval_seconds}s).")
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            logger.info("Executing scheduled daily sitemap sync...")
+            await crawler.sync_daily()
+        except asyncio.CancelledError:
+            logger.info("Daily sync worker received cancellation.")
+            break
+        except Exception as e:
+            logger.error(f"Error during scheduled daily sync: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _daily_sync_task
+    if settings.enable_background_sync:
+        _daily_sync_task = asyncio.create_task(_daily_sync_loop())
+        logger.info("Background daily sitemap sync worker scheduled.")
+    else:
+        logger.info("Background daily sitemap sync is disabled by configuration (test/local mode).")
+    try:
+        yield
+    finally:
+        if _daily_sync_task and not _daily_sync_task.done():
+            _daily_sync_task.cancel()
+            try:
+                await _daily_sync_task
+            except asyncio.CancelledError:
+                pass
+
 app = FastAPI(
     title="AI Tech Consultant - Knowledge Brain API",
-    version="2.0.0",
-    description="Task 1: Self-evolving product memory, polite crawler, multimodal vision, and hybrid RAG service."
+    version="2.1.0",
+    description="Task 1: Self-evolving product memory, polite crawler, multimodal vision, and hybrid RAG service.",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -34,33 +77,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-db = Database(db_path=settings.knowledge_db_path)
-vision = VisionAnalyzer()
-crawler = PoliteCrawler(db=db, vision_analyzer=vision)
-rag_engine = HybridRAGEngine(db=db)
-
 @app.get("/health")
 def health_check():
-    """Operational health check verifying database connectivity and active index size."""
+    """
+    Operational health check verifying DB connectivity, active index size,
+    embedding provider status, daily sync configuration, and active models.
+    """
     try:
         active_articles = len(db.get_all_active_urls())
         chunks_count = len(db.get_all_chunks())
+        
+        emb_status = rag_engine.retriever.embedder.get_status()
+        
+        overall_status = "healthy"
+        if emb_status.get("status") in ["error", "degraded"]:
+            overall_status = "degraded"
+
         return {
-            "status": "healthy",
+            "status": overall_status,
             "database": "connected",
             "active_articles_count": active_articles,
             "chunks_count": chunks_count,
+            "embedding": emb_status,
+            "daily_sync_enabled": settings.enable_background_sync,
+            "sync_interval_hours": settings.sync_interval_hours,
+            "models": {
+                "text": settings.anthropic_model_text,
+                "vision": settings.anthropic_model_vision
+            },
             "environment": "production" if os.getenv("ANTHROPIC_API_KEY") else "local_test"
         }
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database unhealthy: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 @app.get("/")
 def root():
     return {
         "service": "Knowledge Brain API",
         "status": "online",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "health_check": "/health",
         "docs_url": "/docs"
     }
@@ -77,12 +132,15 @@ async def ask_question(
     return await rag_engine.ask(request=req, model=model)
 
 @app.post("/api/v1/sync", response_model=SyncReport)
-async def trigger_sync(max_pages: Optional[int] = Query(None, description="Limit crawl slice for test runs")):
+async def trigger_sync(
+    max_pages: Optional[int] = Query(None, description="Limit crawl slice for test runs"),
+    force: bool = Query(False, description="Force re-processing and re-embedding of articles even if content hash is unchanged")
+):
     """
     Checks complete sitemap against local DB: indexes added/updated articles,
-    purges deleted articles from active memory.
+    purges deleted articles from active memory. Supports force=True for complete re-indexing.
     """
-    report = await crawler.sync_daily(max_pages=max_pages)
+    report = await crawler.sync_daily(max_pages=max_pages, force=force)
     return report
 
 @app.get("/api/v1/sync/status", response_model=SyncStatus)

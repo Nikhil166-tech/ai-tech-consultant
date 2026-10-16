@@ -3,20 +3,24 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.models import EvidenceStatus
+from app.config import settings
 
 @pytest.fixture
 def client():
     return TestClient(app, raise_server_exceptions=False)
 
 def test_01_health_endpoint_contract(client):
-    """Verifies /health contract: status 200, operational metrics, connected DB."""
+    """Verifies /health contract: status 200, operational metrics, connected DB, embedding status."""
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "healthy"
+    assert data["status"] in ["healthy", "degraded"]
     assert data["database"] == "connected"
     assert "active_articles_count" in data
     assert "chunks_count" in data
+    assert "embedding" in data
+    assert "daily_sync_enabled" in data
+    assert "models" in data
     assert isinstance(data["active_articles_count"], int)
     assert isinstance(data["chunks_count"], int)
 
@@ -74,3 +78,50 @@ def test_05_simulated_model_api_failure(client):
         payload = {"question": "How do I setup webhooks?"}
         response = client.post("/api/v1/ask", json=payload)
         assert response.status_code == 500
+
+def test_06_embedding_provider_health_status(client):
+    """
+    Requirement 3: Expose embedding provider status through /health.
+    Learned embeddings must report provider, model, and healthy status.
+    """
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    emb = data["embedding"]
+    assert "provider" in emb
+    assert "model" in emb
+    assert "status" in emb
+    assert "dimensions" in emb
+    assert emb["status"] in ["healthy", "test_only"]
+
+def test_07_degraded_embedding_status_reported_on_failure(client):
+    """
+    Requirement 3: When learned embeddings fail to initialize, /health must clearly
+    report degraded status rather than silently presenting test embeddings as healthy.
+    """
+    mock_degraded_status = {
+        "provider": "fastembed",
+        "model": "failed_initialization",
+        "status": "degraded",
+        "dimensions": 128,
+        "error": "FastEmbed initialization failed: Model checkpoint missing. Operating in degraded non-semantic fallback."
+    }
+    with patch("app.main.rag_engine.retriever.embedder.get_status", return_value=mock_degraded_status):
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["embedding"]["status"] == "degraded"
+        assert "Model checkpoint missing" in data["embedding"]["error"]
+
+def test_08_active_model_defaults_in_health(client):
+    """
+    Requirement 1: Verify current active configurable models (claude-haiku-5-5 and claude-sonnet-5-5).
+    """
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    models = data["models"]
+    assert models["text"] == "claude-haiku-5-5"
+    assert models["vision"] == "claude-sonnet-5-5"
+    assert data["daily_sync_enabled"] == settings.enable_background_sync

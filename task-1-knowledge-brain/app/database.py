@@ -224,6 +224,13 @@ class Database:
                 ))
             conn.commit()
 
+    def update_chunk_embedding(self, chunk_id: str, embedding: List[float]):
+        """Persists a regenerated embedding vector for an existing chunk (e.g. on dimension mismatch)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE chunks SET embedding_json = ? WHERE id = ?", (json.dumps(embedding), chunk_id))
+            conn.commit()
+
     def mark_article_removed(self, url: str):
         with self._get_connection() as conn:
             cursor = conn.cursor()

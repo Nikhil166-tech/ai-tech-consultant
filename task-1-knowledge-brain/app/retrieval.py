@@ -29,6 +29,16 @@ class BaseEmbeddingProvider(ABC):
         """Embed a list of text strings into a list of dense vectors."""
         return [self.embed_text(t) for t in texts]
 
+    @abstractmethod
+    def get_dimensions(self) -> int:
+        """Returns the dimensionality of vectors produced by this provider."""
+        pass
+
+    @abstractmethod
+    def get_status(self) -> Dict[str, Any]:
+        """Returns operational status for health check reporting."""
+        pass
+
 class FastEmbedProvider(BaseEmbeddingProvider):
     """
     Genuine learned semantic embedding provider using FastEmbed (ONNX runtime).
@@ -37,14 +47,20 @@ class FastEmbedProvider(BaseEmbeddingProvider):
     def __init__(self, model_name: Optional[str] = None):
         self.model_name = model_name or settings.embedding_model_name
         self._model = None
+        self._dim = 384
+        self.error_message: Optional[str] = None
         self._init_model()
 
     def _init_model(self):
         try:
             from fastembed import TextEmbedding
             self._model = TextEmbedding(model_name=self.model_name)
-            logger.info(f"Initialized FastEmbedProvider with learned model '{self.model_name}'")
+            # Probe dimension dynamically
+            probe = list(self._model.embed(["probe"]))[0]
+            self._dim = len(probe)
+            logger.info(f"Initialized FastEmbedProvider with learned model '{self.model_name}' (dim={self._dim})")
         except Exception as e:
+            self.error_message = str(e)
             logger.error(f"Failed to load FastEmbed model '{self.model_name}': {e}")
             raise
 
@@ -65,6 +81,45 @@ class FastEmbedProvider(BaseEmbeddingProvider):
             self._init_model()
         vec_generator = self._model.embed(texts)
         return [vec.tolist() for vec in vec_generator]
+
+    def get_dimensions(self) -> int:
+        return self._dim
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "provider": "fastembed",
+            "model": self.model_name,
+            "status": "healthy" if self._model is not None else "error",
+            "dimensions": self._dim,
+            "error": self.error_message
+        }
+
+class DegradedFastEmbedFallbackProvider(BaseEmbeddingProvider):
+    """
+    Exposed when FastEmbed fails to load in production mode.
+    Clearly reports 'degraded' status and does NOT falsely claim to be semantic retrieval.
+    """
+    def __init__(self, error_message: str):
+        self.error_message = error_message
+        self._fallback = DeterministicTestEmbeddingProvider()
+
+    def embed_text(self, text: str) -> List[float]:
+        return self._fallback.embed_text(text)
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        return self._fallback.embed_batch(texts)
+
+    def get_dimensions(self) -> int:
+        return self._fallback.get_dimensions()
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "provider": "fastembed",
+            "model": "failed_initialization",
+            "status": "degraded",
+            "dimensions": self._fallback.dim,
+            "error": f"FastEmbed initialization failed: {self.error_message}. Operating in degraded non-semantic fallback."
+        }
 
 class DeterministicTestEmbeddingProvider(BaseEmbeddingProvider):
     """
@@ -96,6 +151,18 @@ class DeterministicTestEmbeddingProvider(BaseEmbeddingProvider):
             vec = [x / norm for x in vec]
         return vec
 
+    def get_dimensions(self) -> int:
+        return self.dim
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "provider": "deterministic_test",
+            "model": "test-hashing-projection",
+            "status": "test_only",
+            "dimensions": self.dim,
+            "error": None
+        }
+
 def get_embedding_provider(
     provider_type: Optional[str] = None,
     model_name: Optional[str] = None
@@ -105,13 +172,16 @@ def get_embedding_provider(
         try:
             return FastEmbedProvider(model_name=model_name)
         except Exception as e:
-            logger.warning(f"FastEmbed unavailable ({e}); falling back to DeterministicTestEmbeddingProvider for offline safety.")
-            return DeterministicTestEmbeddingProvider()
+            logger.error(f"FastEmbed failed to initialize: {e}")
+            return DegradedFastEmbedFallbackProvider(error_message=str(e))
     elif provider in ["test", "deterministic_test"]:
         return DeterministicTestEmbeddingProvider()
     else:
-        logger.warning(f"Unknown embedding provider '{provider}', defaulting to FastEmbedProvider.")
-        return FastEmbedProvider(model_name=model_name)
+        logger.warning(f"Unknown embedding provider '{provider}', attempting FastEmbedProvider.")
+        try:
+            return FastEmbedProvider(model_name=model_name)
+        except Exception as e:
+            return DegradedFastEmbedFallbackProvider(error_message=str(e))
 
 class LexicalRetriever:
     def tokenize(self, text: str) -> List[str]:
@@ -158,14 +228,26 @@ class LexicalRetriever:
         return scored
 
 class DenseVectorRetriever:
-    def __init__(self, embedding_provider: BaseEmbeddingProvider):
+    def __init__(self, embedding_provider: BaseEmbeddingProvider, db: Optional[Any] = None):
         self.embedder = embedding_provider
+        self.db = db
 
     def score(self, query_emb: List[float], chunks: List[ArticleChunk]) -> List[Tuple[ArticleChunk, float]]:
         results: List[Tuple[ArticleChunk, float]] = []
+        q_dim = len(query_emb)
         for chunk in chunks:
-            if not chunk.embedding:
+            # Dimension mismatch recovery:
+            # If stored chunk-vector dimensions do not match the current query embedding dimensions,
+            # regenerate that chunk embedding and persist it to database!
+            if not chunk.embedding or len(chunk.embedding) != q_dim:
+                logger.info(
+                    f"Dimension mismatch for chunk {chunk.id} "
+                    f"(stored={len(chunk.embedding) if chunk.embedding else 0}, expected={q_dim}). Regenerating embedding."
+                )
                 chunk.embedding = self.embedder.embed_text(f"{chunk.title} {chunk.section_heading} {chunk.text}")
+                if self.db and hasattr(self.db, "update_chunk_embedding"):
+                    self.db.update_chunk_embedding(chunk.id, chunk.embedding)
+
             sim = cosine_similarity(query_emb, chunk.embedding)
             if sim > 0.05:
                 results.append((chunk, sim))
@@ -175,12 +257,14 @@ class HybridRetriever:
     def __init__(
         self,
         embedding_provider: Optional[BaseEmbeddingProvider] = None,
-        alpha: float = settings.hybrid_alpha
+        alpha: float = settings.hybrid_alpha,
+        db: Optional[Any] = None
     ):
         self.embedder = embedding_provider or get_embedding_provider()
         self.lexical = LexicalRetriever()
-        self.dense = DenseVectorRetriever(self.embedder)
+        self.dense = DenseVectorRetriever(self.embedder, db=db)
         self.alpha = alpha
+        self.db = db
 
     def retrieve(
         self,

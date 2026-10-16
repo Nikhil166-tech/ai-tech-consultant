@@ -22,7 +22,7 @@ class HybridRAGEngine:
         self.db = db
         self.api_key = anthropic_api_key or settings.anthropic_api_key
         self.model = settings.anthropic_model_text
-        self.retriever = HybridRetriever(embedding_provider=embedding_provider)
+        self.retriever = HybridRetriever(embedding_provider=embedding_provider, db=self.db)
         self.client = None
         if self.api_key:
             try:

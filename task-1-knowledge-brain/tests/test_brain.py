@@ -145,7 +145,7 @@ async def test_06_safe_deletion_with_max_pages_limit(temp_db, sample_article, mo
         ], True
     monkeypatch.setattr(crawler, "fetch_sitemap_urls", mock_fetch_sitemap)
 
-    async def mock_crawl(url, lastmod):
+    async def mock_crawl(url, lastmod, *args, **kwargs):
         return sample_article, "UNCHANGED"
     monkeypatch.setattr(crawler, "crawl_article", mock_crawl)
 
@@ -493,7 +493,6 @@ async def test_21_partial_child_sitemap_failure_performs_zero_deletions(temp_db,
         elif "child-1.xml" in url:
             return MockResp(200, child_1_xml)
         elif "child-2.xml" in url:
-            # Child 2 encounters 500 error / partial network outage
             return MockResp(500, b"Internal Server Error")
         return None
 
@@ -506,7 +505,7 @@ async def test_21_partial_child_sitemap_failure_performs_zero_deletions(temp_db,
     assert entries[0]["url"] == "https://support.bd.com/new-article-1"
 
     # Mock crawl_article for safe ingestion
-    async def mock_crawl(url, lastmod):
+    async def mock_crawl(url, lastmod, *args, **kwargs):
         art = Article(
             url=url,
             title="New Article 1",
@@ -561,7 +560,6 @@ def test_23_database_schema_auto_migration(tmp_path):
     db_file = tmp_path / "legacy_v1.db"
     conn = sqlite3.connect(str(db_file))
     cursor = conn.cursor()
-    # Legacy schema missing content_hash, section_heading, images_json, provenance_notes
     cursor.execute("""
     CREATE TABLE articles (
         url TEXT PRIMARY KEY,
@@ -582,3 +580,85 @@ def test_23_database_schema_auto_migration(tmp_path):
     art = upgraded_db.get_article("https://test.com/1")
     assert art is not None
     assert art.title == "Legacy 1"
+
+def test_24_active_model_configuration_defaults():
+    """
+    Requirement 1: Verify current active configurable models (claude-haiku-5-5 and claude-sonnet-5-5).
+    """
+    from app.config import settings
+    assert settings.anthropic_model_text == "claude-haiku-5-5"
+    assert settings.anthropic_model_vision == "claude-sonnet-5-5"
+
+def test_25_embedding_dimension_mismatch_recovery(temp_db, sample_article):
+    """
+    Requirement 4: If stored chunk-vector dimensions do not match the current query
+    embedding dimensions (e.g. legacy model 128 vs new model 384), automatically
+    regenerate that embedding and update the database.
+    """
+    temp_db.upsert_article(sample_article)
+    legacy_vec = [0.05] * 128
+    chunk = ArticleChunk(
+        id="chunk_legacy_dim",
+        article_url=sample_article.url,
+        title=sample_article.title,
+        category="Finance",
+        folder="Payment",
+        section_heading="Credentials Setup",
+        chunk_index=0,
+        text=sample_article.body_text,
+        embedding=legacy_vec
+    )
+    temp_db.save_chunks([chunk])
+
+    embedder = get_embedding_provider("fastembed")
+    rag = HybridRAGEngine(db=temp_db, embedding_provider=embedder)
+
+    results = rag.search("Stripe Publishable Key")
+    assert len(results) > 0
+
+    # Verify chunk was regenerated to 384 dimensions in database
+    db_chunks = temp_db.get_all_chunks()
+    assert len(db_chunks) == 1
+    assert len(db_chunks[0].embedding) == embedder.get_dimensions()
+    assert len(db_chunks[0].embedding) == 384
+
+@pytest.mark.asyncio
+async def test_26_forced_reindex_overrides_content_hash(temp_db, sample_article, monkeypatch):
+    """
+    Requirement 4: force=True in crawl_article() must force reprocessing/re-embedding
+    even when content hash is unchanged.
+    """
+    crawler = PoliteCrawler(db=temp_db)
+
+    html_content = f"<html><body><h1>{sample_article.title}</h1><p>{sample_article.body_text}</p></body></html>"
+
+    async def mock_fetch(client, url):
+        class MockResp:
+            status_code = 200
+            headers = {"etag": "etag_1", "last-modified": "2026-10-16"}
+            text = html_content
+        return MockResp()
+
+    monkeypatch.setattr(crawler, "_fetch_with_retry", mock_fetch)
+
+    # 1. Initial crawl to establish baseline index
+    art0, class0 = await crawler.crawl_article(sample_article.url, force=False)
+    assert class0 == "NEW"
+
+    # 2. Re-crawl without changes and force=False -> UNCHANGED
+    art1, class1 = await crawler.crawl_article(sample_article.url, force=False)
+    assert class1 == "UNCHANGED"
+
+    # 3. Forced crawl with force=True -> CHANGED (forces re-chunking and re-embedding)
+    art2, class2 = await crawler.crawl_article(sample_article.url, force=True)
+    assert class2 == "CHANGED"
+    assert art2 is not None
+
+def test_27_daily_sync_scheduler_disabled_in_tests():
+    """
+    Requirement 2: Daily sync mechanism must allow disabling it through configuration
+    for tests/local development.
+    """
+    from app.config import settings
+    assert settings.enable_background_sync is False
+    assert settings.sync_interval_hours == 24.0
