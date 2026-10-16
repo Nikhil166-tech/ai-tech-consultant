@@ -30,7 +30,7 @@ graph TD
         B2["Section-Aware Semantic Chunker"]
         B3["FastEmbed BAAI/bge-small-en-v1.5 (384-dim)"]
         B4["SQLite Hybrid Vector/FTS Storage"]
-        B5["Evidence Scorer & Calibrated Decision Engine"]
+        B5["Evidence Scorer & Heuristic Decision Engine"]
     end
 
     subgraph Task2["Task 2: Inbox Agent (Port 3000)"]
@@ -63,7 +63,7 @@ graph TD
 ### 3.1 Task 1: The Self-Evolving Knowledge Brain
 - **Section-Aware Chunking**: Technical documentation cannot be split arbitrarily by character counts without losing section headings, admin paths, and context. Our crawler breaks documents by Markdown/HTML header hierarchies (`##`, `###`), preserving full DOM path breadcrumbs (`Finance > Payment Gateways > Stripe`).
 - **Semantic Embeddings without Heuristic Fakes**: Instead of pseudo-embeddings (hashed n-gram vectors), we deploy `fastembed` running `BAAI/bge-small-en-v1.5` generating real 384-dimensional dense semantic vectors. If embedding dimensions drift, automatic table schema migration and chunk re-indexing execute cleanly.
-- **Calibrated Evidence Scoring**: Retrieval answers are scored into four deterministic tiers:
+- **Heuristic Evidence Scoring**: Retrieval answers are scored into four deterministic tiers using an uncalibrated heuristic evidence classifier:
   - `STRONG` (Score >= 0.70): Explicit documentation found with matching section headings and high semantic similarity.
   - `PARTIAL` (0.45 <= Score < 0.70): Related topics found but exact technical workflow requires verification.
   - `INSUFFICIENT` (0.0 < Score < 0.45): Distant topic mentions without actionable guidance.
@@ -109,13 +109,15 @@ graph TD
 
 ## 5. Model Selection & Justification
 
-We standardize on Anthropic Claude 3.5 / 5.5 generation with configurable fallbacks:
+We configure Anthropic Claude models with deterministic offline fallbacks:
 - **Text Reasoning Default (`claude-haiku-5-5`)**:
-  - **Rationale**: Ultra-fast latency (sub-400ms), low token cost ($0.25/M input), and high adherence to JSON schemas. Ideal for real-time inbox triage, requirement extraction, and capability classification.
+  - **Rationale**: Selected as the default text model for lightweight inference, structured JSON output generation, and cost-effective triage across high-volume email classification and requirement parsing tasks.
 - **Vision Default (`claude-sonnet-5-5`)**:
-  - **Rationale**: Superior spatial OCR and UI layout understanding for extracting complex admin navigation paths from high-resolution screenshots.
+  - **Rationale**: Configured for multimodal vision analysis where UI layout understanding and screenshot transcription of admin dashboards are required.
 - **Zero-Key Deterministic Fallback**:
-  - **Rationale**: If `ANTHROPIC_API_KEY` is not provided, the entire system falls back to deterministic rule engines, semantic vector search, and heuristic parsers, ensuring tests and CI/CD pipelines run reliably offline.
+  - **Rationale**: If `ANTHROPIC_API_KEY` is not provided in the environment, the entire system falls back to deterministic rule engines, semantic vector search, and heuristic parsers, ensuring tests, local evaluations, and CI/CD pipelines run reliably offline without external API dependencies.
+- **Corpus & Heuristic Scoring Limitations**:
+  - Task 1 operates under a bounded 25-page initial bootstrap index from the Brilliant Directories Solution Center. Evidence scores use an uncalibrated heuristic scoring engine based on hybrid search overlap and term coverage. Third-party integrations (e.g., external CRMs like HubSpot) can retrieve semantically related Developer Hub/API pages, resulting in partial heuristic scores (`evidence_score=0.609`, `PARTIAL`, `is_known=true`). Task 3 independently enforces capability checks to allocate unverified or third-party scopes to discovery hours rather than assuming native support.
 
 ---
 
@@ -139,8 +141,9 @@ Instead of brittle model fine-tuning, the platform self-improves through two clo
    - When specialists edit drafts in the review dashboard, the system logs the pair `(originalDraft, finalEditedReply, reviewerNotes)`.
    - On future client inquiries for that specific kind, the `FeedbackStore` injects the latest positive exemplars into the system context. Evaluation benchmarks verify that version `v2_feedback_enhanced` demonstrates a **100% feedback incorporation rate** over `v1_baseline`.
 2. **24-Hour Autonomous Sitemap Synchronization (Task 1)**:
-   - A lightweight background task polls the Brilliant Directories XML sitemap index every 24 hours.
-   - New or updated articles are extracted and re-embedded into the vector database, ensuring Task 2 and Task 3 are perpetually grounded in the latest platform features.
+   - An asynchronous background worker capability is implemented in Task 1 to poll the Brilliant Directories XML sitemap index every 24 hours.
+   - When enabled (`ENABLE_BACKGROUND_SYNC=true`), new or updated articles are extracted and re-embedded into the vector database, while complete sitemaps allow safe detection of deleted articles without risking mass deletion on partial network errors.
+   - In the default local demo and Docker evaluation environment, this background worker is intentionally disabled (`ENABLE_BACKGROUND_SYNC=false`) to ensure deterministic test execution and avoid unsolicited background network traffic.
 
 ---
 
