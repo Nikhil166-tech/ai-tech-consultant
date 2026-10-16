@@ -1,4 +1,4 @@
-from app.models import RequirementItem, CapabilityStatus, EstimateRange
+from app.models import RequirementItem, CapabilityStatus, EstimateRange, RequirementLifecycleStatus
 
 
 class TechnicalEstimatorAgent:
@@ -107,7 +107,10 @@ class TechnicalEstimatorAgent:
     def estimate_all(self, requirements: list[RequirementItem]) -> list[RequirementItem]:
         estimated = []
         for req in requirements:
-            estimated.append(self.estimate_requirement(req))
+            if req.status == RequirementLifecycleStatus.UNCHANGED and req.estimate is not None:
+                estimated.append(req)
+            else:
+                estimated.append(self.estimate_requirement(req))
         return estimated
 
     def compute_total_hours(

@@ -170,3 +170,118 @@ async def test_changed_acceptance_criteria_preserved_in_follow_up():
     assert "custom_total_hours" in prior_snap
     assert "discovery_total_hours" in prior_snap
     assert "approval_state" in prior_snap
+
+
+@pytest.mark.asyncio
+async def test_follow_up_explicit_unchanged_lifecycle():
+    """Exact failing scenario:
+    Initial requirements:
+    - REQ-01 Stripe Payment Processing
+    - REQ-02 Recurring Subscription Billing
+    - REQ-03 Location Radius Search
+    - REQ-04 Custom CRM Integration
+    Follow-up transcript:
+    'Change the HubSpot CRM integration from bidirectional synchronization to one-way synchronization for new members only. Remove the 25-mile radius search requirement from phase 1. Keep Stripe subscription billing unchanged.'
+    Required result:
+    - Stripe Payment Processing = UNCHANGED
+    - Recurring Subscription Billing = UNCHANGED
+    - Custom CRM Integration = CHANGED
+    - Location Radius Search = REMOVED
+    Diff summary:
+    - New: 0, Changed: 1, Unchanged: 2, Removed: 1, Out of Scope: 0
+    """
+    store = ProjectStore(filepath="data/test_store_exact_unchanged.json")
+    orch = PipelineOrchestrator(store=store)
+
+    init_transcript = (
+        "Client: We need Stripe payment processing to accept credit cards for memberships, "
+        "recurring monthly subscription billing, "
+        "location radius search within 25 miles of zip code, "
+        "and custom CRM integration to synchronize contacts to HubSpot."
+    )
+    scope1 = await orch.create_project_from_meeting(init_transcript, project_id="proj_exact_lifecycle")
+    assert len(scope1.requirements) == 4
+
+    stripe_m1 = next(r for r in scope1.requirements if "stripe" in r.title.lower() and "payment" in r.title.lower())
+    billing_m1 = next(r for r in scope1.requirements if "recurring" in r.title.lower() or "subscription" in r.title.lower())
+    radius_m1 = next(r for r in scope1.requirements if "radius" in r.title.lower())
+    crm_m1 = next(r for r in scope1.requirements if "crm" in r.title.lower())
+
+    follow_up_transcript = (
+        "Change the HubSpot CRM integration from bidirectional synchronization to one-way synchronization for new members only. "
+        "Remove the 25-mile radius search requirement from phase 1. "
+        "Keep Stripe subscription billing unchanged."
+    )
+    scope2, change_set = await orch.process_follow_up("proj_exact_lifecycle", follow_up_transcript)
+
+    # 1. Check exact required lifecycle statuses
+    stripe_m2 = next(r for r in change_set.unchanged_requirements if r.id == stripe_m1.id)
+    assert stripe_m2.status == RequirementLifecycleStatus.UNCHANGED
+    assert stripe_m2.description == stripe_m1.description
+    assert stripe_m2.capability_status == stripe_m1.capability_status
+    assert stripe_m2.estimate is not None
+    assert stripe_m2.estimate.expected_hours == stripe_m1.estimate.expected_hours
+
+    billing_m2 = next(r for r in change_set.unchanged_requirements if r.id == billing_m1.id)
+    assert billing_m2.status == RequirementLifecycleStatus.UNCHANGED
+    assert billing_m2.description == billing_m1.description
+    assert billing_m2.capability_status == billing_m1.capability_status
+    assert billing_m2.estimate is not None
+    assert billing_m2.estimate.expected_hours == billing_m1.estimate.expected_hours
+
+    crm_m2 = next(r for r in change_set.changed_requirements if r.id == crm_m1.id)
+    assert crm_m2.status == RequirementLifecycleStatus.CHANGED
+    assert "one-way" in crm_m2.description.lower() or "one-way" in crm_m2.change_reason.lower()
+
+    radius_m2 = next(r for r in change_set.removed_requirements if r.id == radius_m1.id)
+    assert radius_m2.status == RequirementLifecycleStatus.REMOVED
+
+    # 2. Check exact required diff counts
+    assert len(change_set.new_requirements) == 0
+    assert len(change_set.changed_requirements) == 1
+    assert len(change_set.unchanged_requirements) == 2
+    assert len(change_set.removed_requirements) == 1
+    assert len(change_set.out_of_scope_requirements) == 0
+
+    # 3. Check diff summary text
+    assert "- New: 0" in change_set.diff_summary
+    assert "- Changed: 1" in change_set.diff_summary
+    assert "- Unchanged: 2" in change_set.diff_summary
+    assert "- Removed: 1" in change_set.diff_summary
+    assert "- Out of Scope: 0" in change_set.diff_summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "follow_up_phrase",
+    [
+        "Keep Stripe payment processing unchanged.",
+        "Stripe payment processing stays unchanged.",
+        "No change to Stripe payment processing.",
+        "Leave Stripe payment processing as is.",
+    ],
+)
+async def test_follow_up_explicit_unchanged_semantics_phrases(follow_up_phrase):
+    """Verifies all explicit unchanged phrasing patterns:
+    - 'keep X unchanged'
+    - 'X stays unchanged'
+    - 'no change to X'
+    - 'leave X as is'
+    """
+    store = ProjectStore(filepath=f"data/test_store_phrase_{abs(hash(follow_up_phrase))}.json")
+    orch = PipelineOrchestrator(store=store)
+
+    scope1 = await orch.create_project_from_meeting(
+        "Client: We need Stripe payment processing for credit cards and custom CRM integration with HubSpot.",
+        project_id=f"proj_ph_{abs(hash(follow_up_phrase))}",
+    )
+    stripe_m1 = next(r for r in scope1.requirements if "stripe" in r.title.lower())
+
+    follow_up = f"Client: For HubSpot CRM integration, make it one-way only. {follow_up_phrase}"
+    scope2, change_set = await orch.process_follow_up(f"proj_ph_{abs(hash(follow_up_phrase))}", follow_up)
+
+    stripe_m2 = next(r for r in change_set.unchanged_requirements if r.id == stripe_m1.id)
+    assert stripe_m2.status == RequirementLifecycleStatus.UNCHANGED
+    assert stripe_m2.description == stripe_m1.description
+    assert stripe_m2.id == stripe_m1.id
+

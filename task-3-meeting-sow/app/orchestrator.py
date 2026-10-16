@@ -68,7 +68,33 @@ def match_requirement(req: RequirementItem, candidates: list[RequirementItem]) -
         overlap = req_words.intersection(cand_words)
         if len(overlap) >= 2 or (len(overlap) == 1 and any(w in overlap for w in ("crm", "hubspot", "stripe", "badge", "badges", "radius", "recaptcha", "csv", "export", "app", "erp"))):
             return cand
-    return None
+def get_requirement_keywords(req: RequirementItem) -> set[str]:
+    """Returns domain keywords associated specifically with this requirement's topic."""
+    t_lower = req.title.lower()
+    words = set(re.findall(r"\w+", t_lower)) - {"custom", "automated", "member", "to", "for", "and", "the", "integration"}
+    if "crm" in t_lower or "hubspot" in t_lower:
+        words.update(["crm", "hubspot", "salesforce"])
+    if "stripe" in t_lower or "payment" in t_lower:
+        words.update(["stripe", "payment"])
+    if "billing" in t_lower or "subscription" in t_lower or "recurring" in t_lower:
+        words.update(["billing", "subscription", "recurring"])
+    if "radius" in t_lower or "distance" in t_lower:
+        words.update(["radius", "distance"])
+    if "badge" in t_lower or "verified" in t_lower:
+        words.update(["badge", "badges", "verified"])
+    if "mobile" in t_lower or "app" in t_lower:
+        words.update(["mobile", "app", "ios", "android"])
+    if "accounting" in t_lower or "erp" in t_lower:
+        words.update(["accounting", "erp", "quickbooks"])
+    if "welcome" in t_lower or "email" in t_lower:
+        words.update(["welcome", "email"])
+    if "export" in t_lower or "csv" in t_lower:
+        words.update(["export", "csv"])
+    if "recaptcha" in t_lower or "spam" in t_lower:
+        words.update(["recaptcha", "spam"])
+    if "claim" in t_lower or "listing" in t_lower:
+        words.update(["claim", "claimable", "listing", "listings"])
+    return words
 
 
 class PipelineOrchestrator:
@@ -169,7 +195,7 @@ class PipelineOrchestrator:
         clauses = [
             c.strip().lower()
             for line in follow_up_transcript.splitlines()
-            for c in re.split(r"[.\n;]", line)
+            for c in re.split(r"[.\n;]|\bbut\b|\bwhile\b|\bhowever\b", line)
             if c.strip()
         ]
 
@@ -179,16 +205,22 @@ class PipelineOrchestrator:
         oos_patterns = [r"\b(out of scope|defer|phase 2|later phase|not in phase 1|post-launch)\b"]
         rem_patterns = [r"\b(cancel|canceling|cancelling|remove|removing|drop|dropping|skip|skipping|no longer need|don't need|do not need|not doing|eliminate|won't need)\b"]
         mod_patterns = [r"\b(only send|one-way|two-way|instead of|change|update|modify|restrict to|switch to|custom css animation)\b"]
+        unch_patterns = [
+            r"\bkeep\b.+?\b(unchanged|as[- ]is|the same)\b",
+            r"\b(stays?|remains?)\b.+?\b(unchanged|as[- ]is|the same)\b",
+            r"\b.+?\b(stays?|remains?)\s+(unchanged|as[- ]is|the same)\b",
+            r"\bno\s+changes?\s+(to|for|in|on)\b",
+            r"\bleave\b.+?\b(as[- ]is|unchanged|alone)\b",
+        ]
 
         # Check existing requirements for OUT_OF_SCOPE, REMOVED, CHANGED, or UNCHANGED
         for orig_req in existing_scope.requirements:
-            t_lower = orig_req.title.lower()
-            orig_words = [w for w in re.findall(r"\w+", t_lower) if w not in ("custom", "automated", "member", "to", "for", "integration")]
+            match_words = get_requirement_keywords(orig_req)
 
             # A. Check if moved OUT OF SCOPE (deferred to phase 2 / post-launch)
             is_out_of_scope = False
             for clause in clauses:
-                if any(re.search(p, clause) for p in oos_patterns) and any(w in clause for w in orig_words):
+                if any(re.search(p, clause) for p in oos_patterns) and any(re.search(rf"\b{re.escape(w)}\b", clause) for w in match_words):
                     is_out_of_scope = True
                     break
 
@@ -202,7 +234,7 @@ class PipelineOrchestrator:
             # B. Check if explicitly REMOVED (cancelled, dropped, no longer needed)
             is_removed = False
             for clause in clauses:
-                if any(re.search(p, clause) for p in rem_patterns) and any(w in clause for w in orig_words):
+                if any(re.search(p, clause) for p in rem_patterns) and any(re.search(rf"\b{re.escape(w)}\b", clause) for w in match_words):
                     is_removed = True
                     break
 
@@ -213,14 +245,42 @@ class PipelineOrchestrator:
                 change_set.removed_requirements.append(removed_item)
                 continue
 
-            # C. Check if CHANGED or UNCHANGED against new extracted candidates
+            # C. Check if explicitly UNCHANGED (e.g. 'keep X unchanged', 'X stays unchanged', 'no change to X', 'leave X as is')
+            is_explicit_unchanged = False
+            for clause in clauses:
+                if any(re.search(p, clause) for p in unch_patterns):
+                    if orig_req.id.lower() in clause or any(re.search(rf"\b{re.escape(w)}\b", clause) for w in match_words):
+                        is_explicit_unchanged = True
+                        break
+
+            if is_explicit_unchanged:
+                unchanged_item = orig_req.model_copy()
+                unchanged_item.id = orig_req.id  # PRESERVE STABLE ID!
+                unchanged_item.description = orig_req.description  # PRESERVE ORIGINAL DESCRIPTION!
+                unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
+                unchanged_item.change_reason = ""
+                # PRESERVE EXISTING CAPABILITY STATUS / CITATIONS / ESTIMATE
+                unchanged_item.capability_status = orig_req.capability_status
+                unchanged_item.citations = list(orig_req.citations)
+                unchanged_item.estimate = orig_req.estimate.model_copy() if orig_req.estimate else None
+
+                # Mark all matching candidates so they are not treated as new in Step D
+                for cand in new_candidates:
+                    if cand.id == orig_req.id or match_requirement(orig_req, [cand]):
+                        matched_candidate_ids.add(cand.id)
+
+                change_set.unchanged_requirements.append(unchanged_item)
+                updated_reqs.append(unchanged_item)
+                continue
+
+            # D. Check if CHANGED or UNCHANGED against new extracted candidates
             matched_candidate = match_requirement(orig_req, new_candidates)
 
             # Check if there is an explicit modification mentioned in a matching clause
             explicit_mod_in_clause = False
             mod_clause_text = ""
             for clause in clauses:
-                if any(re.search(p, clause) for p in mod_patterns) and any(w in clause for w in orig_words):
+                if any(re.search(p, clause) for p in mod_patterns) and any(re.search(rf"\b{re.escape(w)}\b", clause) for w in match_words):
                     explicit_mod_in_clause = True
                     mod_clause_text = clause.strip()
                     break
