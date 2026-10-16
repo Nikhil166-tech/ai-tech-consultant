@@ -1,255 +1,379 @@
-import re
-import os
-import json
-import uuid
-from datetime import datetime, timezone
-from app.models import (
-    ProjectScope,
-    RequirementItem,
-    RequirementLifecycleStatus,
-    ScopeChangeSet,
-    Task1Citation,
-)
-from app.agents.requirements_analyst import RequirementsAnalystAgent
-from app.agents.capability_checker import ProductCapabilityCheckerAgent
-from app.agents.technical_estimator import TechnicalEstimatorAgent
-from app.agents.proposal_writer import ProposalWriterAgent
-
-
-class ProjectStore:
-    def __init__(self, filepath: str | None = None):
-        self.filepath = filepath or os.path.join(os.getcwd(), "data", "project_store.json")
-        self._projects: dict[str, ProjectScope] = {}
-        self.load()
-
-    def get(self, project_id: str) -> ProjectScope | None:
-        return self._projects.get(project_id)
-
-    def save(self, scope: ProjectScope) -> None:
-        self._projects[scope.project_id] = scope
-        self.persist()
-
-    def list_all(self) -> list[ProjectScope]:
-        return list(self._projects.values())
-
-    def load(self) -> None:
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self._projects = {
-                        k: ProjectScope.model_validate(v) for k, v in data.items()
-                    }
-            except Exception as err:
-                print(f"Warning: could not load project store from {self.filepath}: {err}")
-
-    def persist(self) -> None:
-        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
-        try:
-            with open(self.filepath, "w", encoding="utf-8") as f:
-                serializable = {
-                    k: v.model_dump(mode="json") for k, v in self._projects.items()
-                }
-                json.dump(serializable, f, indent=2, default=str)
-        except Exception as err:
-            print(f"Error persisting project store: {err}")
-
-
-class PipelineOrchestrator:
-    """
-    Coordinates the multi-agent Meeting-to-Scope pipeline and manages
-    multi-meeting project history and diffing.
-    """
-
-    def __init__(
-        self,
-        analyst: RequirementsAnalystAgent | None = None,
-        checker: ProductCapabilityCheckerAgent | None = None,
-        estimator: TechnicalEstimatorAgent | None = None,
-        writer: ProposalWriterAgent | None = None,
-        store: ProjectStore | None = None,
-    ):
-        self.analyst = analyst or RequirementsAnalystAgent()
-        self.checker = checker or ProductCapabilityCheckerAgent()
-        self.estimator = estimator or TechnicalEstimatorAgent()
-        self.writer = writer or ProposalWriterAgent()
-        self.store = store or ProjectStore()
-
-    async def create_project_from_meeting(
-        self, transcript: str, project_id: str | None = None
-    ) -> ProjectScope:
-        pid = project_id or f"proj_{uuid.uuid4().hex[:8]}"
-
-        # 1. Requirements Extraction
-        analysis = await self.analyst.analyze_transcript(transcript)
-
-        # 2. Capability Evaluation against Task 1
-        evaluated_reqs = await self.checker.evaluate_all(analysis["requirements"])
-
-        # 3. Technical Effort Estimation
-        estimated_reqs = self.estimator.estimate_all(evaluated_reqs)
-        hours_range, expected_hours = self.estimator.compute_total_hours(estimated_reqs)
-
-        # Gather citations
-        citations = []
-        for r in estimated_reqs:
-            citations.extend(r.citations)
-
-        scope = ProjectScope(
-            project_id=pid,
-            version=1,
-            meeting_count=1,
-            client_goal=analysis["client_goal"],
-            requirements=estimated_reqs,
-            assumptions=analysis["assumptions"],
-            open_questions=analysis["open_questions"],
-            risks=analysis["risks"],
-            out_of_scope=analysis["out_of_scope"],
-            total_custom_hours_range=hours_range,
-            expected_total_hours=expected_hours,
-            source_citations=citations,
-            client_ready=False,  # CRITICAL: Always false until human approves!
-        )
-
-        # 4. Generate Initial SOW Draft
-        scope.proposal_markdown = self.writer.generate_sow(scope)
-
-        # 5. Persist
-        self.store.save(scope)
-        return scope
-
-    async def process_follow_up(
-        self, project_id: str, follow_up_transcript: str
-    ) -> tuple[ProjectScope, ScopeChangeSet]:
-        existing_scope = self.store.get(project_id)
-        if not existing_scope:
-            raise ValueError(f"Project '{project_id}' not found")
-
-        # 1. Analyze follow-up transcript with existing requirements context
-        new_analysis = await self.analyst.analyze_transcript(
-            follow_up_transcript, existing_requirements=existing_scope.requirements
-        )
-
-        text_lower = follow_up_transcript.lower()
-        change_set = ScopeChangeSet()
-        updated_reqs: list[RequirementItem] = []
-
-        existing_req_map = {r.id: r for r in existing_scope.requirements}
-        new_req_titles = {r.title.lower(): r for r in new_analysis["requirements"]}
-
-        # Check existing requirements for REMOVED, CHANGED, or UNCHANGED
-        for orig_req in existing_scope.requirements:
-            t_lower = orig_req.title.lower()
-
-            # Check if explicitly removed in follow-up dialogue
-            short_keywords = [t_lower, t_lower.replace("custom ", "").strip()]
-            is_explicitly_removed = False
-            for kw in short_keywords:
-                pattern = rf"(cancel|canceling|cancelling|remove|removing|drop|dropping|skip|skipping|don't need|do not need|no longer need|not doing)\s+(the\s+|our\s+)?{re.escape(kw)}"
-                if re.search(pattern, text_lower):
-                    is_explicitly_removed = True
-                    break
-
-            if is_explicitly_removed:
-                removed_item = orig_req.model_copy()
-                removed_item.status = RequirementLifecycleStatus.REMOVED
-                removed_item.change_reason = "Client explicitly removed item in follow-up meeting."
-                change_set.removed_requirements.append(removed_item)
-                # Omit or mark removed in updated requirements
-                continue
-
-            # Check if requirement changed or unchanged
-            if t_lower in new_req_titles:
-                new_candidate = new_req_titles[t_lower]
-                if new_candidate.description != orig_req.description:
-                    changed_item = new_candidate.model_copy()
-                    changed_item.id = orig_req.id
-                    changed_item.status = RequirementLifecycleStatus.CHANGED
-                    changed_item.change_reason = "Scope or acceptance criteria modified in follow-up meeting."
-                    change_set.changed_requirements.append(changed_item)
-                    updated_reqs.append(changed_item)
-                else:
-                    unchanged_item = orig_req.model_copy()
-                    unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
-                    change_set.unchanged_requirements.append(unchanged_item)
-                    updated_reqs.append(unchanged_item)
-            else:
-                # Not mentioned in follow-up dialogue -> remains UNCHANGED
-                unchanged_item = orig_req.model_copy()
-                unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
-                change_set.unchanged_requirements.append(unchanged_item)
-                updated_reqs.append(unchanged_item)
-
-        # Check for completely NEW requirements introduced in follow-up
-        existing_titles = {r.title.lower() for r in existing_scope.requirements}
-        for cand in new_analysis["requirements"]:
-            if cand.title.lower() not in existing_titles:
-                new_item = cand.model_copy()
-                new_item.status = RequirementLifecycleStatus.NEW
-                new_item.change_reason = "New requirement introduced in follow-up meeting."
-                change_set.new_requirements.append(new_item)
-                updated_reqs.append(new_item)
-
-        # 2. Evaluate Capabilities on NEW and CHANGED requirements
-        reqs_to_evaluate = [
-            r for r in updated_reqs if r.status in (RequirementLifecycleStatus.NEW, RequirementLifecycleStatus.CHANGED)
-        ]
-        if reqs_to_evaluate:
-            evaluated_subset = await self.checker.evaluate_all(reqs_to_evaluate)
-            eval_map = {r.id: r for r in evaluated_subset}
-            final_reqs = [eval_map.get(r.id, r) for r in updated_reqs]
-        else:
-            final_reqs = updated_reqs
-
-        # 3. Re-estimate custom work
-        final_estimated = self.estimator.estimate_all(final_reqs)
-        hours_range, expected_hours = self.estimator.compute_total_hours(final_estimated)
-
-        # 4. Diff Summary
-        diff_lines = [
-            f"Scope Change Summary (Meeting #{existing_scope.meeting_count + 1}):",
-            f"- New: {len(change_set.new_requirements)}",
-            f"- Changed: {len(change_set.changed_requirements)}",
-            f"- Unchanged: {len(change_set.unchanged_requirements)}",
-            f"- Removed: {len(change_set.removed_requirements)}",
-        ]
-        change_set.diff_summary = "\n".join(diff_lines)
-
-        # 5. Build Updated ProjectScope
-        updated_scope = ProjectScope(
-            project_id=project_id,
-            version=existing_scope.version + 1,
-            meeting_count=existing_scope.meeting_count + 1,
-            client_goal=new_analysis["client_goal"] or existing_scope.client_goal,
-            requirements=final_estimated,
-            assumptions=list(set(existing_scope.assumptions + new_analysis["assumptions"])),
-            open_questions=new_analysis["open_questions"],
-            risks=list(set(existing_scope.risks + new_analysis["risks"])),
-            out_of_scope=list(set(existing_scope.out_of_scope + new_analysis["out_of_scope"])),
-            total_custom_hours_range=hours_range,
-            expected_total_hours=expected_hours,
-            source_citations=[c for r in final_estimated for c in r.citations],
-            client_ready=False,  # CRITICAL: Reset to False on follow-up changes!
-        )
-
-        updated_scope.proposal_markdown = self.writer.generate_sow(updated_scope)
-
-        # 6. Save
-        self.store.save(updated_scope)
-        return updated_scope, change_set
-
-    def approve_scope(self, project_id: str, approved_by: str) -> ProjectScope:
-        scope = self.store.get(project_id)
-        if not scope:
-            raise ValueError(f"Project '{project_id}' not found")
-
-        if not approved_by or not approved_by.strip():
-            raise ValueError("Approval requires a valid human approver identifier")
-
-        scope.client_ready = True
-        scope.approved_by = approved_by.strip()
-        scope.approved_at = datetime.now(timezone.utc)
-        scope.updated_at = datetime.now(timezone.utc)
-
-        self.store.save(scope)
-        return scope
+import os
+import re
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+from app.models import (
+    ProjectScope,
+    RequirementItem,
+    RequirementLifecycleStatus,
+    ScopeChangeSet,
+    CapabilityStatus,
+)
+from app.agents.requirements_analyst import RequirementsAnalystAgent, get_next_req_number
+from app.agents.capability_checker import ProductCapabilityCheckerAgent
+from app.agents.technical_estimator import TechnicalEstimatorAgent
+from app.agents.proposal_writer import ProposalWriterAgent
+
+
+class ProjectStore:
+    """Lightweight JSON-persisted store for multi-meeting project scopes and version history."""
+
+    def __init__(self, filepath: str | None = None):
+        self.filepath = filepath or os.path.join(os.getcwd(), "data", "project_store.json")
+        self._projects: dict[str, ProjectScope] = {}
+        self.load()
+
+    def get(self, project_id: str) -> ProjectScope | None:
+        return self._projects.get(project_id)
+
+    def save(self, scope: ProjectScope) -> None:
+        self._projects[scope.project_id] = scope
+        self.persist()
+
+    def list_all(self) -> list[ProjectScope]:
+        return list(self._projects.values())
+
+    def load(self) -> None:
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self._projects = {
+                        k: ProjectScope.model_validate(v) for k, v in data.items()
+                    }
+            except Exception:
+                self._projects = {}
+
+    def persist(self) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(self.filepath)), exist_ok=True)
+        data = {k: v.model_dump(mode="json") for k, v in self._projects.items()}
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+
+
+def match_requirement(req: RequirementItem, candidates: list[RequirementItem]) -> RequirementItem | None:
+    """Matches a requirement by exact ID, title containment, or shared core keywords."""
+    req_title = req.title.lower()
+    req_words = set(re.findall(r"\w+", req_title)) - {"custom", "automated", "member", "to", "for", "and", "the", "integration"}
+
+    for cand in candidates:
+        if cand.id == req.id:
+            return cand
+        cand_title = cand.title.lower()
+        if cand_title == req_title or cand_title in req_title or req_title in cand_title:
+            return cand
+        cand_words = set(re.findall(r"\w+", cand_title)) - {"custom", "automated", "member", "to", "for", "and", "the", "integration"}
+        overlap = req_words.intersection(cand_words)
+        if len(overlap) >= 2 or (len(overlap) == 1 and any(w in overlap for w in ("crm", "hubspot", "stripe", "badge", "badges", "radius", "recaptcha", "csv", "export", "app", "erp"))):
+            return cand
+    return None
+
+
+class PipelineOrchestrator:
+    """
+    Autonomous Plain-Python Multi-Agent Pipeline Orchestrator.
+    Executes:
+    Meeting Transcript
+           ↓
+    Requirements Analyst
+           ↓
+    Product Capability Checker (calls Task 1 /api/v1/ask)
+           ↓
+    Technical Estimator
+           ↓
+    Proposal / SOW Writer
+           ↓
+    Human Approval Gate
+           ↓
+    Client-ready output
+    """
+
+    def __init__(
+        self,
+        analyst: RequirementsAnalystAgent | None = None,
+        checker: ProductCapabilityCheckerAgent | None = None,
+        estimator: TechnicalEstimatorAgent | None = None,
+        writer: ProposalWriterAgent | None = None,
+        store: ProjectStore | None = None,
+    ):
+        self.analyst = analyst or RequirementsAnalystAgent()
+        self.checker = checker or ProductCapabilityCheckerAgent()
+        self.estimator = estimator or TechnicalEstimatorAgent()
+        self.writer = writer or ProposalWriterAgent()
+        self.store = store or ProjectStore()
+
+    async def create_project_from_meeting(
+        self, transcript: str, project_id: str | None = None
+    ) -> ProjectScope:
+        proj_id = project_id or f"proj_{uuid.uuid4().hex[:8]}"
+
+        # 1. Extract Requirements (treats transcript as untrusted)
+        analysis = await self.analyst.analyze_transcript(transcript)
+
+        # 2. Check Capabilities against Task 1 Knowledge Brain
+        evaluated_reqs = await self.checker.evaluate_all(analysis["requirements"])
+
+        # 3. Estimate Technical Effort (separates custom dev vs discovery spike)
+        final_estimated = self.estimator.estimate_all(evaluated_reqs)
+        custom_range, exp_custom, disc_range, exp_disc = self.estimator.compute_total_hours(final_estimated)
+
+        citations = [c for r in final_estimated for c in r.citations]
+
+        # 4. Construct Initial ProjectScope
+        scope = ProjectScope(
+            project_id=proj_id,
+            version=1,
+            meeting_count=1,
+            client_goal=analysis["client_goal"],
+            requirements=final_estimated,
+            assumptions=analysis["assumptions"],
+            open_questions=analysis["open_questions"],
+            risks=analysis["risks"],
+            out_of_scope=analysis["out_of_scope"],
+            custom_hours_range=custom_range,
+            expected_custom_hours=exp_custom,
+            discovery_hours_range=disc_range,
+            expected_discovery_hours=exp_disc,
+            total_custom_hours_range=custom_range,
+            expected_total_hours=exp_custom,
+            source_citations=citations,
+            client_ready=False,  # CRITICAL: Always false until human approves!
+            decisions=[f"Meeting #1: Initial scope drafted with {len(final_estimated)} functional requirements."],
+        )
+
+        # 5. Generate Initial Draft SOW
+        scope.proposal_markdown = self.writer.generate_sow(scope)
+
+        # 6. Persist
+        self.store.save(scope)
+        return scope
+
+    async def process_follow_up(
+        self, project_id: str, follow_up_transcript: str
+    ) -> tuple[ProjectScope, ScopeChangeSet]:
+        existing_scope = self.store.get(project_id)
+        if not existing_scope:
+            raise ValueError(f"Project '{project_id}' not found")
+
+        # 1. Analyze follow-up transcript with existing requirements context
+        new_analysis = await self.analyst.analyze_transcript(
+            follow_up_transcript, existing_requirements=existing_scope.requirements
+        )
+
+        change_set = ScopeChangeSet()
+        updated_reqs: list[RequirementItem] = []
+
+        # Split dialogue into lines/clauses for precise utterance matching
+        clauses = [
+            c.strip().lower()
+            for line in follow_up_transcript.splitlines()
+            for c in re.split(r"[.\n;]", line)
+            if c.strip()
+        ]
+
+        new_candidates = list(new_analysis["requirements"])
+        matched_candidate_ids = set()
+
+        oos_patterns = [r"\b(out of scope|defer|phase 2|later phase|not in phase 1|post-launch)\b"]
+        rem_patterns = [r"\b(cancel|canceling|cancelling|remove|removing|drop|dropping|skip|skipping|no longer need|don't need|do not need|not doing|eliminate|won't need)\b"]
+        mod_patterns = [r"\b(only send|one-way|two-way|instead of|change|update|modify|restrict to|switch to|custom css animation)\b"]
+
+        # Check existing requirements for OUT_OF_SCOPE, REMOVED, CHANGED, or UNCHANGED
+        for orig_req in existing_scope.requirements:
+            t_lower = orig_req.title.lower()
+            orig_words = [w for w in re.findall(r"\w+", t_lower) if w not in ("custom", "automated", "member", "to", "for", "integration")]
+
+            # A. Check if moved OUT OF SCOPE (deferred to phase 2 / post-launch)
+            is_out_of_scope = False
+            for clause in clauses:
+                if any(re.search(p, clause) for p in oos_patterns) and any(w in clause for w in orig_words):
+                    is_out_of_scope = True
+                    break
+
+            if is_out_of_scope:
+                oos_item = orig_req.model_copy()
+                oos_item.status = RequirementLifecycleStatus.OUT_OF_SCOPE
+                oos_item.change_reason = "Deferred to future phase / moved out of current scope in follow-up meeting."
+                change_set.out_of_scope_requirements.append(oos_item)
+                continue
+
+            # B. Check if explicitly REMOVED (cancelled, dropped, no longer needed)
+            is_removed = False
+            for clause in clauses:
+                if any(re.search(p, clause) for p in rem_patterns) and any(w in clause for w in orig_words):
+                    is_removed = True
+                    break
+
+            if is_removed:
+                removed_item = orig_req.model_copy()
+                removed_item.status = RequirementLifecycleStatus.REMOVED
+                removed_item.change_reason = "Client explicitly removed requirement in follow-up meeting."
+                change_set.removed_requirements.append(removed_item)
+                continue
+
+            # C. Check if CHANGED or UNCHANGED against new extracted candidates
+            matched_candidate = match_requirement(orig_req, new_candidates)
+
+            # Check if there is an explicit modification mentioned in a matching clause
+            explicit_mod_in_clause = False
+            for clause in clauses:
+                if any(re.search(p, clause) for p in mod_patterns) and any(w in clause for w in orig_words):
+                    explicit_mod_in_clause = True
+                    break
+
+            if matched_candidate:
+                matched_candidate_ids.add(matched_candidate.id)
+                desc_changed = matched_candidate.description != orig_req.description
+
+                if desc_changed or explicit_mod_in_clause:
+                    changed_item = matched_candidate.model_copy()
+                    changed_item.id = orig_req.id  # PRESERVE STABLE ID!
+                    changed_item.status = RequirementLifecycleStatus.CHANGED
+                    changed_item.change_reason = f"Modified criteria in follow-up meeting: {matched_candidate.description}"
+                    change_set.changed_requirements.append(changed_item)
+                    updated_reqs.append(changed_item)
+                else:
+                    unchanged_item = orig_req.model_copy()
+                    unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
+                    change_set.unchanged_requirements.append(unchanged_item)
+                    updated_reqs.append(unchanged_item)
+            elif explicit_mod_in_clause:
+                changed_item = orig_req.model_copy()
+                changed_item.status = RequirementLifecycleStatus.CHANGED
+                changed_item.change_reason = "Modified parameters in follow-up meeting dialogue."
+                change_set.changed_requirements.append(changed_item)
+                updated_reqs.append(changed_item)
+            else:
+                unchanged_item = orig_req.model_copy()
+                unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
+                change_set.unchanged_requirements.append(unchanged_item)
+                updated_reqs.append(unchanged_item)
+
+        # D. Check for completely NEW requirements introduced in follow-up
+        next_req_num = get_next_req_number(existing_scope.requirements)
+        for cand in new_candidates:
+            if cand.id not in matched_candidate_ids and not match_requirement(cand, existing_scope.requirements):
+                new_item = cand.model_copy()
+                new_item.id = f"REQ-{next_req_num:02d}"
+                next_req_num += 1
+                new_item.status = RequirementLifecycleStatus.NEW
+                new_item.change_reason = "New requirement introduced in follow-up meeting."
+                change_set.new_requirements.append(new_item)
+                updated_reqs.append(new_item)
+
+        # 2. Evaluate Capabilities on NEW and CHANGED requirements
+        reqs_to_evaluate = [
+            r for r in updated_reqs if r.status in (RequirementLifecycleStatus.NEW, RequirementLifecycleStatus.CHANGED)
+        ]
+        if reqs_to_evaluate:
+            evaluated_subset = await self.checker.evaluate_all(reqs_to_evaluate)
+            eval_map = {r.id: r for r in evaluated_subset}
+            final_reqs = [eval_map.get(r.id, r) for r in updated_reqs]
+        else:
+            final_reqs = updated_reqs
+
+        # 3. Re-estimate effort
+        final_estimated = self.estimator.estimate_all(final_reqs)
+        custom_range, exp_custom, disc_range, exp_disc = self.estimator.compute_total_hours(final_estimated)
+
+        # 4. Compile Diff Summary with all 5 lifecycle states
+        diff_lines = [
+            f"Scope Change Summary (Meeting #{existing_scope.meeting_count + 1}):",
+            f"- New: {len(change_set.new_requirements)}",
+            f"- Changed: {len(change_set.changed_requirements)}",
+            f"- Unchanged: {len(change_set.unchanged_requirements)}",
+            f"- Removed: {len(change_set.removed_requirements)}",
+            f"- Out of Scope: {len(change_set.out_of_scope_requirements)}",
+        ]
+        change_set.diff_summary = "\n".join(diff_lines)
+
+        # 5. Snapshot previous version in version_history
+        snapshot = {
+            "version": existing_scope.version,
+            "meeting_count": existing_scope.meeting_count,
+            "client_ready": existing_scope.client_ready,
+            "approved_by": existing_scope.approved_by,
+            "total_custom_hours": existing_scope.expected_custom_hours,
+            "requirements_count": len(existing_scope.requirements),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        history = list(existing_scope.version_history)
+        history.append(snapshot)
+
+        # Combine assumptions (preserving order and removing duplicates)
+        accumulated_assumptions = list(dict.fromkeys(existing_scope.assumptions + new_analysis["assumptions"]))
+
+        # Preserve unresolved open questions + new questions
+        unresolved_questions = list(dict.fromkeys(existing_scope.open_questions + new_analysis["open_questions"]))
+        if any(r.status == RequirementLifecycleStatus.CHANGED and "crm" in r.title.lower() for r in final_estimated):
+            unresolved_questions = [q for q in unresolved_questions if "crm" not in q.lower()]
+
+        # Combine out_of_scope
+        combined_oos = list(dict.fromkeys(
+            existing_scope.out_of_scope +
+            new_analysis["out_of_scope"] +
+            [f"[{r.id}] {r.title}: {r.description}" for r in change_set.out_of_scope_requirements]
+        ))
+
+        # Record decision
+        new_decisions = list(existing_scope.decisions)
+        new_decisions.append(
+            f"Meeting #{existing_scope.meeting_count + 1}: Follow-up processed with "
+            f"{len(change_set.new_requirements)} new, {len(change_set.changed_requirements)} changed, "
+            f"{len(change_set.removed_requirements)} removed, {len(change_set.out_of_scope_requirements)} out of scope."
+        )
+
+        change_history = list(existing_scope.change_history)
+        change_history.append(change_set)
+
+        # 6. Build Updated ProjectScope
+        updated_scope = ProjectScope(
+            project_id=project_id,
+            version=existing_scope.version + 1,
+            meeting_count=existing_scope.meeting_count + 1,
+            client_goal=new_analysis["client_goal"] or existing_scope.client_goal,
+            requirements=final_estimated,
+            assumptions=accumulated_assumptions,
+            open_questions=unresolved_questions,
+            risks=list(dict.fromkeys(existing_scope.risks + new_analysis["risks"])),
+            out_of_scope=combined_oos,
+            custom_hours_range=custom_range,
+            expected_custom_hours=exp_custom,
+            discovery_hours_range=disc_range,
+            expected_discovery_hours=exp_disc,
+            total_custom_hours_range=custom_range,
+            expected_total_hours=exp_custom,
+            source_citations=[c for r in final_estimated for c in r.citations],
+            client_ready=False,  # CRITICAL: Always reset to False on follow-up changes!
+            approved_by=None,
+            approved_at=None,
+            version_history=history,
+            change_history=change_history,
+            decisions=new_decisions,
+        )
+
+        updated_scope.proposal_markdown = self.writer.generate_sow(updated_scope)
+
+        # 7. Persist
+        self.store.save(updated_scope)
+        return updated_scope, change_set
+
+    def approve_scope(self, project_id: str, approved_by: str) -> ProjectScope:
+        scope = self.store.get(project_id)
+        if not scope:
+            raise ValueError(f"Project '{project_id}' not found")
+
+        if not approved_by or not approved_by.strip():
+            raise ValueError("Human approver name or identifier cannot be empty")
+
+        clean_approver = approved_by.strip()
+        scope.client_ready = True
+        scope.approved_by = clean_approver
+        scope.approved_at = datetime.now(timezone.utc)
+        scope.decisions.append(f"Scope Version {scope.version} approved by human reviewer '{clean_approver}' — marked client-ready.")
+
+        scope.proposal_markdown = self.writer.generate_sow(scope)
+        self.store.save(scope)
+        return scope

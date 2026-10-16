@@ -5,13 +5,17 @@ class TechnicalEstimatorAgent:
     """
     Technical Estimator Agent:
     Estimates custom engineering effort using 3-point estimation (Optimistic, Most Likely, Pessimistic).
-    CRITICAL POLICY: Native configuration items receive strictly 0 custom-development hours.
-    Explicitly documents assumptions and technical risks.
+    CRITICAL POLICIES:
+    - Native configuration items receive strictly 0 custom-development hours.
+    - Partial items receive custom hours only for the custom code/styling portion.
+    - UNKNOWN items receive time-boxed discovery spikes that are strictly SEPARATED
+      from confirmed custom development hours.
     """
 
     def estimate_requirement(self, requirement: RequirementItem) -> RequirementItem:
         status = requirement.capability_status
         title_lower = requirement.title.lower()
+        desc_lower = requirement.description.lower()
 
         # 1. Native Configuration -> STRICTLY 0 Custom Hours
         if status == CapabilityStatus.NATIVE:
@@ -20,7 +24,7 @@ class TechnicalEstimatorAgent:
                 most_likely=0.0,
                 pessimistic=0.0,
                 complexity="NONE",
-                assumptions=["Standard Brilliant Directories platform setting; native configuration only."],
+                assumptions=["Standard Brilliant Directories platform setting; native configuration only ($0 custom dev)."],
                 risks=[],
             )
             return requirement
@@ -28,7 +32,6 @@ class TechnicalEstimatorAgent:
         # 2. Custom Engineering
         if status == CapabilityStatus.CUSTOM:
             if "crm" in title_lower or "hubspot" in title_lower or "salesforce" in title_lower:
-                # API integration
                 requirement.estimate = EstimateRange.calculate(
                     optimistic=12.0,
                     most_likely=20.0,
@@ -36,15 +39,14 @@ class TechnicalEstimatorAgent:
                     complexity="MEDIUM",
                     assumptions=[
                         "Client provides sandbox API credentials with sufficient rate limits.",
-                        "Standard two-way contact syncing without custom object schemas.",
+                        "Contact synchronization without complex custom object relational schemas.",
                     ],
                     risks=[
-                        "3rd-party webhook failure or schema breaking changes.",
-                        "Field mapping discrepancies between BD member fields and CRM contacts.",
+                        "3rd-party webhook delivery failure or schema breaking changes.",
+                        "Field mapping discrepancies between BD member fields and external CRM contacts.",
                     ],
                 )
             elif "mobile app" in title_lower or "react native" in title_lower:
-                # Mobile wrapper/app
                 requirement.estimate = EstimateRange.calculate(
                     optimistic=40.0,
                     most_likely=60.0,
@@ -52,7 +54,7 @@ class TechnicalEstimatorAgent:
                     complexity="HIGH",
                     assumptions=[
                         "WebView-based container with native push notifications wrapper.",
-                        "Client supplies Apple Developer & Google Play accounts.",
+                        "Client supplies Apple Developer & Google Play organizational accounts.",
                     ],
                     risks=[
                         "App store review rejection due to guideline 4.2 (minimum functionality for web wrappers).",
@@ -60,7 +62,6 @@ class TechnicalEstimatorAgent:
                     ],
                 )
             else:
-                # General custom widget / PHP logic
                 requirement.estimate = EstimateRange.calculate(
                     optimistic=8.0,
                     most_likely=14.0,
@@ -71,26 +72,35 @@ class TechnicalEstimatorAgent:
                 )
             return requirement
 
-        # 3. Partial Support (Native add-on + custom glue)
+        # 3. Partial Support (Native add-on + custom glue/styling)
         if status == CapabilityStatus.PARTIAL:
             requirement.estimate = EstimateRange.calculate(
                 optimistic=4.0,
                 most_likely=8.0,
                 pessimistic=16.0,
                 complexity="LOW",
-                assumptions=["Native add-on provides base functionality; hours allocated solely for custom bridge."],
-                risks=["Add-on version compatibility with future BD core releases."],
+                assumptions=[
+                    "Native BD feature provides base data model and display.",
+                    "Hours allocated strictly for custom CSS/JavaScript extensions or glue logic.",
+                ],
+                risks=["Theme updates may require re-testing custom CSS/JS."],
             )
             return requirement
 
-        # 4. Unknown Status (Technical spike estimate)
+        # 4. Unknown Status (Technical Feasibility Discovery Spike)
         requirement.estimate = EstimateRange.calculate(
             optimistic=4.0,
             most_likely=8.0,
             pessimistic=16.0,
             complexity="HIGH",
-            assumptions=["Allocated as a time-boxed technical feasibility spike."],
-            risks=["Feature may prove infeasible natively and require custom architecture."],
+            assumptions=[
+                "Allocated strictly as a time-boxed technical feasibility discovery spike.",
+                "Does NOT represent committed custom engineering hours.",
+            ],
+            risks=[
+                "Feature may require significant external infrastructure if not supported natively in BD.",
+                "Discovery outcome may recommend alternative architecture.",
+            ],
         )
         return requirement
 
@@ -100,18 +110,39 @@ class TechnicalEstimatorAgent:
             estimated.append(self.estimate_requirement(req))
         return estimated
 
-    def compute_total_hours(self, requirements: list[RequirementItem]) -> tuple[tuple[float, float], float]:
+    def compute_total_hours(
+        self, requirements: list[RequirementItem]
+    ) -> tuple[tuple[float, float], float, tuple[float, float], float]:
         """
-        Calculates (min_hours, max_hours) range and expected total hours.
+        Calculates:
+        - (custom_min, custom_max), custom_expected (from CUSTOM and PARTIAL only)
+        - (discovery_min, discovery_max), discovery_expected (from UNKNOWN only)
+        NATIVE items strictly contribute 0 to both totals.
         """
-        min_total = 0.0
-        max_total = 0.0
-        expected_total = 0.0
+        custom_min = 0.0
+        custom_max = 0.0
+        custom_expected = 0.0
+
+        discovery_min = 0.0
+        discovery_max = 0.0
+        discovery_expected = 0.0
 
         for req in requirements:
-            if req.estimate and req.capability_status != CapabilityStatus.NATIVE:
-                min_total += req.estimate.optimistic_hours
-                max_total += req.estimate.pessimistic_hours
-                expected_total += req.estimate.expected_hours
+            if not req.estimate:
+                continue
 
-        return (round(min_total, 1), round(max_total, 1)), round(expected_total, 1)
+            if req.capability_status in (CapabilityStatus.CUSTOM, CapabilityStatus.PARTIAL):
+                custom_min += req.estimate.optimistic_hours
+                custom_max += req.estimate.pessimistic_hours
+                custom_expected += req.estimate.expected_hours
+            elif req.capability_status == CapabilityStatus.UNKNOWN:
+                discovery_min += req.estimate.optimistic_hours
+                discovery_max += req.estimate.pessimistic_hours
+                discovery_expected += req.estimate.expected_hours
+
+        return (
+            (round(custom_min, 1), round(custom_max, 1)),
+            round(custom_expected, 1),
+            (round(discovery_min, 1), round(discovery_max, 1)),
+            round(discovery_expected, 1),
+        )

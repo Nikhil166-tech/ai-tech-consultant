@@ -58,8 +58,9 @@ def create_app(orchestrator: PipelineOrchestrator | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
         return scope
 
-    @app.post("/api/v1/projects/{project_id}/proposal")
-    def get_proposal(project_id: str):
+    @app.get("/api/v1/projects/{project_id}/draft-proposal")
+    def get_draft_proposal(project_id: str):
+        """Internal view of unapproved draft proposal."""
         scope = orch.store.get(project_id)
         if not scope:
             raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
@@ -67,6 +68,32 @@ def create_app(orchestrator: PipelineOrchestrator | None = None) -> FastAPI:
             "project_id": scope.project_id,
             "version": scope.version,
             "client_ready": scope.client_ready,
+            "proposal_markdown": scope.proposal_markdown,
+        }
+
+    @app.api_route("/api/v1/projects/{project_id}/proposal", methods=["GET", "POST"])
+    def get_client_proposal(project_id: str):
+        """
+        Client-facing proposal endpoint.
+        STRICT GATING: Returns HTTP 403 Forbidden if scope is not yet human-approved (client_ready=False).
+        """
+        scope = orch.store.get(project_id)
+        if not scope:
+            raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+
+        if not scope.client_ready:
+            raise HTTPException(
+                status_code=403,
+                detail="Proposal is an unapproved internal draft (client_ready=False). "
+                       "Explicit human approval via POST /api/v1/projects/{project_id}/approve is required before client release.",
+            )
+
+        return {
+            "project_id": scope.project_id,
+            "version": scope.version,
+            "client_ready": scope.client_ready,
+            "approved_by": scope.approved_by,
+            "approved_at": scope.approved_at,
             "proposal_markdown": scope.proposal_markdown,
         }
 
@@ -83,4 +110,4 @@ def create_app(orchestrator: PipelineOrchestrator | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+app = create_app()

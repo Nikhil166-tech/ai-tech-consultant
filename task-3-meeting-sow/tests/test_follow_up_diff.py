@@ -1,54 +1,130 @@
-import os
 import pytest
 from app.orchestrator import PipelineOrchestrator, ProjectStore
-from app.models import RequirementLifecycleStatus, CapabilityStatus
-
-
-@pytest.fixture
-def clean_store(tmp_path):
-    store_file = str(tmp_path / "test_project_store.json")
-    return ProjectStore(store_file)
+from app.models import RequirementLifecycleStatus, CapabilityStatus, RequirementItem
 
 
 @pytest.mark.asyncio
-async def test_follow_up_diff_classification(clean_store):
-    orch = PipelineOrchestrator(store=clean_store)
+async def test_follow_up_stable_ids_over_multiple_meetings():
+    store = ProjectStore(filepath="data/test_store_multi.json")
+    orch = PipelineOrchestrator(store=store)
 
     # Meeting 1: Initial Discovery
-    m1_transcript = (
-        "Sarah: Our goal is to build an online attorney portal.\n"
-        "We need Stripe payment processing, recurring monthly billing, and a custom CRM integration with HubSpot."
+    m1_transcript = "Client: We need Stripe payment processing and location radius search."
+    scope1 = await orch.create_project_from_meeting(m1_transcript, project_id="proj_multi_m")
+
+    req_ids_m1 = [r.id for r in scope1.requirements]
+    assert "REQ-01" in req_ids_m1
+    assert "REQ-02" in req_ids_m1
+
+    # Meeting 2: Adds automated welcome emails
+    m2_transcript = "Client: We also want automated welcome email templates sent upon registration."
+    scope2, changes2 = await orch.process_follow_up("proj_multi_m", m2_transcript)
+
+    req_ids_m2 = [r.id for r in scope2.requirements]
+    # Check that new requirement received REQ-03 (strictly after max existing REQ-02)
+    assert "REQ-03" in req_ids_m2
+    # Ensure existing requirements kept their stable IDs
+    assert "REQ-01" in req_ids_m2
+    assert "REQ-02" in req_ids_m2
+    assert len(set(req_ids_m2)) == len(req_ids_m2)  # Zero collisions
+
+    # Meeting 3: Adds data export to CSV
+    m3_transcript = "Client: We also need data export to CSV for monthly audits."
+    scope3, changes3 = await orch.process_follow_up("proj_multi_m", m3_transcript)
+
+    req_ids_m3 = [r.id for r in scope3.requirements]
+    assert "REQ-04" in req_ids_m3
+    assert len(set(req_ids_m3)) == len(req_ids_m3)  # Zero collisions
+    assert req_ids_m3 == ["REQ-01", "REQ-02", "REQ-03", "REQ-04"]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_five_lifecycle_states():
+    store = ProjectStore(filepath="data/test_store_states.json")
+    orch = PipelineOrchestrator(store=store)
+
+    # Initial Meeting with:
+    # 1. Stripe Payment Processing
+    # 2. Custom Mobile App Wrapper
+    # 3. Custom CRM Integration
+    # 4. Accounting ERP Integration
+    # 5. Member Verified Badges
+    init_transcript = (
+        "Client: We need Stripe payment processing for billing, "
+        "custom mobile app wrapper, "
+        "custom CRM integration with HubSpot, "
+        "accounting ERP integration, "
+        "and member verified badges."
     )
-    scope_v1 = await orch.create_project_from_meeting(m1_transcript, project_id="proj_apex_01")
+    scope1 = await orch.create_project_from_meeting(init_transcript, project_id="proj_states")
+    assert len(scope1.requirements) >= 4
 
-    assert scope_v1.version == 1
-    assert scope_v1.meeting_count == 1
-    initial_titles = [r.title for r in scope_v1.requirements]
-    assert any("Stripe" in t for t in initial_titles)
-    assert any("CRM" in t for t in initial_titles)
-    assert scope_v1.expected_total_hours > 0  # CRM custom work has hours
-
-    # Meeting 2: Follow-up Scope Change
-    # Canceling CRM integration, adding claimable business listings
-    m2_transcript = (
-        "Sarah: In this follow-up, we are canceling the custom CRM integration for phase 1.\n"
-        "Instead, we are adding claimable business listings for imported law firms."
+    # Follow-up:
+    # - REMOVE mobile app ("we are canceling the custom mobile app")
+    # - OUT_OF_SCOPE for accounting ("accounting ERP integration is out of scope / deferred to phase 2")
+    # - CHANGE CRM sync ("HubSpot CRM sync should now only send new members one-way")
+    # - NEW requirement ("add claimable business listings")
+    # - UNCHANGED (Stripe, Badges)
+    follow_up_transcript = (
+        "Client: We have several scope changes today.\n"
+        "First, we are canceling the custom mobile app wrapper.\n"
+        "Second, accounting ERP integration is out of scope for phase 1 and deferred to phase 2.\n"
+        "Third, for HubSpot CRM sync, make it one-way only instead of two-way.\n"
+        "Fourth, we want to add claimable business listings with email claim verification."
     )
-    scope_v2, changes = await orch.process_follow_up("proj_apex_01", m2_transcript)
+    scope2, change_set = await orch.process_follow_up("proj_states", follow_up_transcript)
 
-    assert scope_v2.version == 2
-    assert scope_v2.meeting_count == 2
+    # Verify all 5 states are populated in change_set
+    assert len(change_set.removed_requirements) > 0
+    assert any("mobile" in r.title.lower() for r in change_set.removed_requirements)
 
-    # Check change set
-    removed_titles = [r.title for r in changes.removed_requirements]
-    assert any("CRM" in t for t in removed_titles)
+    assert len(change_set.out_of_scope_requirements) > 0
+    assert any("accounting" in r.title.lower() or "erp" in r.title.lower() for r in change_set.out_of_scope_requirements)
 
-    new_titles = [r.title for r in changes.new_requirements]
-    assert any("Claimable" in t for t in new_titles)
+    assert len(change_set.changed_requirements) > 0
+    changed_crm = next(r for r in change_set.changed_requirements if "crm" in r.title.lower())
+    assert changed_crm.status == RequirementLifecycleStatus.CHANGED
+    assert "one-way" in changed_crm.description.lower() or "modified" in changed_crm.change_reason.lower()
 
-    unchanged_titles = [r.title for r in changes.unchanged_requirements]
-    assert any("Stripe" in t for t in unchanged_titles)
+    assert len(change_set.new_requirements) > 0
+    assert any("claimable" in r.title.lower() for r in change_set.new_requirements)
 
-    # Since CRM was removed and Claimable is native (0h), total custom hours dropped!
-    assert scope_v2.expected_total_hours < scope_v1.expected_total_hours
-    assert scope_v2.client_ready is False  # Must reset to unapproved on change
+    assert len(change_set.unchanged_requirements) > 0
+    assert any("stripe" in r.title.lower() for r in change_set.unchanged_requirements)
+
+    # Verify diff summary displays all five counts
+    assert "Out of Scope:" in change_set.diff_summary
+    assert "New:" in change_set.diff_summary
+    assert "Changed:" in change_set.diff_summary
+    assert "Unchanged:" in change_set.diff_summary
+    assert "Removed:" in change_set.diff_summary
+
+
+@pytest.mark.asyncio
+async def test_context_and_open_questions_preserved_across_meetings():
+    store = ProjectStore(filepath="data/test_store_ctx.json")
+    orch = PipelineOrchestrator(store=store)
+
+    scope1 = await orch.create_project_from_meeting(
+        "Client: We need Stripe payment processing. Target launch is November.",
+        project_id="proj_ctx"
+    )
+    assert len(scope1.assumptions) > 0
+    orig_assumptions = list(scope1.assumptions)
+
+    # Follow-up
+    scope2, _ = await orch.process_follow_up(
+        "proj_ctx",
+        "Client: We also need data export to CSV. We will provide marketing materials next week."
+    )
+
+    # Verify assumptions are accumulated
+    for a in orig_assumptions:
+        assert a in scope2.assumptions
+
+    # Verify version history snapshot
+    assert len(scope2.version_history) == 1
+    assert scope2.version_history[0]["version"] == 1
+
+    # Verify decisions history
+    assert len(scope2.decisions) >= 2

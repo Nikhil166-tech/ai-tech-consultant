@@ -3,99 +3,122 @@ from app.models import ProjectScope, CapabilityStatus
 
 class ProposalWriterAgent:
     """
-    Proposal / Statement of Work (SOW) Writer Agent:
-    Transforms approved internal scope and capability evaluations into a clean,
-    concise, client-facing proposal and Statement of Work.
-    CRITICAL POLICY: Does not invent arbitrary prices, deadlines, or platform features.
-    Outputs markdown formatted SOW with client_ready = False.
+    Proposal / SOW Writer Agent:
+    Compiles structured project scope into an executive Statement of Work (SOW).
+    DOES NOT invent pricing, delivery deadlines, or unverified platform capabilities.
+    Clearly separates native platform configuration ($0 custom hours),
+    confirmed custom development effort, and technical discovery feasibility spikes.
     """
 
     def generate_sow(self, scope: ProjectScope) -> str:
         native_reqs = [r for r in scope.requirements if r.capability_status == CapabilityStatus.NATIVE]
-        custom_reqs = [r for r in scope.requirements if r.capability_status in (CapabilityStatus.CUSTOM, CapabilityStatus.PARTIAL)]
+        partial_reqs = [r for r in scope.requirements if r.capability_status == CapabilityStatus.PARTIAL]
+        custom_reqs = [r for r in scope.requirements if r.capability_status == CapabilityStatus.CUSTOM]
         unknown_reqs = [r for r in scope.requirements if r.capability_status == CapabilityStatus.UNKNOWN]
 
-        min_hrs, max_hrs = scope.total_custom_hours_range
-        exp_hrs = scope.expected_total_hours
+        status_header = (
+            "## 🟢 APPROVED STATEMENT OF WORK (CLIENT-READY)"
+            if scope.client_ready
+            else "## 🟡 INTERNAL SCOPE DRAFT (NOT CLIENT-READY — PENDING HUMAN APPROVAL)"
+        )
+
+        approval_metadata = ""
+        if scope.client_ready and scope.approved_by:
+            approval_metadata = f"\n**Approved By**: {scope.approved_by} on {scope.approved_at.strftime('%Y-%m-%d %H:%M:%S UTC') if scope.approved_at else 'N/A'}\n"
 
         lines = [
-            f"# Statement of Work (SOW) & Project Scope",
-            f"**Project ID:** `{scope.project_id}` | **Scope Version:** v{scope.version} | **Status:** DRAFT (Internal Review)",
-            f"",
-            f"## 1. Executive Summary & Objective",
-            f"{scope.client_goal}",
-            f"",
-            f"## 2. Brilliant Directories Native Capabilities (Standard Configuration - 0 Custom Hours)",
-            f"The following deliverables will be configured directly using native Brilliant Directories features, requiring zero custom software development:",
+            f"# Statement of Work (SOW) — Project {scope.project_id}",
+            f"**Version**: {scope.version} | **Meeting Sessions Processed**: {scope.meeting_count}",
+            status_header,
+            approval_metadata,
+            "### 1. Client Goal & Objectives",
+            scope.client_goal,
+            "",
+            "### 2. Native Brilliant Directories Capabilities ($0 Custom Dev Hours)",
+            "The following requirements are fulfilled through built-in Brilliant Directories configuration:",
         ]
 
         if native_reqs:
             for r in native_reqs:
-                citation_info = f" *(Ref: {r.citations[0].title})*" if r.citations else ""
-                lines.append(f"- **[{r.id}] {r.title}**: {r.description}{citation_info}")
-                if r.native_alternative_notes:
-                    lines.append(f"  - *Implementation Note:* {r.native_alternative_notes}")
+                note = f" — *{r.native_alternative_notes}*" if r.native_alternative_notes else ""
+                lines.append(f"- **[{r.id}] {r.title}**: {r.description}{note}")
         else:
-            lines.append("- *No strictly native items identified in this scope.*")
+            lines.append("- *(No purely native configuration requirements identified)*")
 
         lines.extend([
-            f"",
-            f"## 3. Custom Engineering & Integration Scope",
-            f"The following items require custom software engineering, custom widget creation, or third-party API integration:",
+            "",
+            "### 3. Confirmed Custom Engineering & Integrations",
+            "The following requirements require custom software development or external API integration:",
         ])
 
-        if custom_reqs:
-            for r in custom_reqs:
-                est = r.estimate
-                hrs_str = f"{est.optimistic_hours}h - {est.pessimistic_hours}h (Expected: ~{est.expected_hours}h)" if est else "TBD"
-                lines.append(f"- **[{r.id}] {r.title}** [{r.capability_status}]: {r.description}")
-                lines.append(f"  - *Estimated Effort:* {hrs_str} | Complexity: {est.complexity_level if est else 'TBD'}")
-                if est and est.assumptions:
-                    lines.append(f"  - *Assumptions:* {'; '.join(est.assumptions)}")
+        combined_custom = custom_reqs + partial_reqs
+        if combined_custom:
+            for r in combined_custom:
+                est_text = (
+                    f" | Estimate: {r.estimate.expected_hours}h ({r.estimate.optimistic_hours}–{r.estimate.pessimistic_hours}h, {r.estimate.complexity_level})"
+                    if r.estimate
+                    else ""
+                )
+                kind = " (Partial Native + Custom Styling/Glue)" if r.capability_status == CapabilityStatus.PARTIAL else ""
+                lines.append(f"- **[{r.id}] {r.title}**{kind}: {r.description}{est_text}")
         else:
-            lines.append("- *No custom engineering required. All items fulfilled through native configuration.*")
+            lines.append("- *(No custom development required)*")
 
         if unknown_reqs:
             lines.extend([
-                f"",
-                f"## 4. Pending Technical Spikes (Unverified Platform Items)",
-                f"The following items could not be confirmed in the Brilliant Directories documentation and will undergo a technical discovery spike:",
+                "",
+                "### 4. Technical Feasibility & Discovery Spikes (Unverified Items)",
+                "The following items could not be confirmed natively from the Solution Center knowledge base and are allocated time-boxed feasibility spikes:",
             ])
             for r in unknown_reqs:
-                lines.append(f"- **[{r.id}] {r.title}**: {r.description}")
-                if r.native_alternative_notes:
-                    lines.append(f"  - *Feasibility Spike:* {r.native_alternative_notes}")
+                est_text = (
+                    f" | Discovery Spike: {r.estimate.expected_hours}h ({r.estimate.optimistic_hours}–{r.estimate.pessimistic_hours}h)"
+                    if r.estimate
+                    else ""
+                )
+                lines.append(f"- **[{r.id}] {r.title}**: {r.description}{est_text}")
 
         lines.extend([
-            f"",
-            f"## 5. Effort Summary",
-            f"- **Native Configuration Effort:** Standard setup (Included)",
-            f"- **Custom Development Hours:** {min_hrs} - {max_hrs} Hours (Expected: ~{exp_hrs} Hours)",
-            f"",
-            f"## 6. Assumptions & Prerequisites",
+            "",
+            "### 5. Level of Effort Summary",
+            f"- **Confirmed Custom Engineering Effort**: {scope.expected_custom_hours} hours (Range: {scope.custom_hours_range[0]} – {scope.custom_hours_range[1]} hrs)",
         ])
-        for a in scope.assumptions:
-            lines.append(f"- {a}")
+
+        if scope.expected_discovery_hours > 0:
+            lines.append(
+                f"- **Technical Discovery & Feasibility Spikes**: {scope.expected_discovery_hours} hours (Range: {scope.discovery_hours_range[0]} – {scope.discovery_hours_range[1]} hrs)"
+            )
+            lines.append("  *(Note: Discovery hours represent time-boxed investigations and are strictly excluded from confirmed custom development)*")
 
         lines.extend([
-            f"",
-            f"## 7. Out of Scope",
+            "",
+            "### 6. Out of Scope",
         ])
-        for o in scope.out_of_scope:
-            lines.append(f"- {o}")
+        for oos in scope.out_of_scope:
+            lines.append(f"- {oos}")
+
+        lines.extend([
+            "",
+            "### 7. Key Assumptions & Technical Risks",
+            "**Assumptions:**",
+        ])
+        for asm in scope.assumptions:
+            lines.append(f"- {asm}")
+
+        lines.append("\n**Risks:**")
+        for rsk in scope.risks:
+            lines.append(f"- {rsk}")
 
         if scope.open_questions:
-            lines.extend([
-                f"",
-                f"## 8. Open Questions for Client Clarification",
-            ])
-            for q in scope.open_questions:
-                lines.append(f"- {q}")
+            lines.append("\n**Open Questions for Client Clarification:**")
+            for oq in scope.open_questions:
+                lines.append(f"- {oq}")
 
-        lines.extend([
-            f"",
-            f"---",
-            f"*Confidential - Prepared for Client Review upon Formal Consultant Approval*",
-        ])
+        lines.append("\n### 8. Solution Center Verified Knowledge Citations")
+        if scope.source_citations:
+            for c in scope.source_citations:
+                lines.append(f"- [{c.title} — {c.section_heading}]({c.url})")
+        else:
+            lines.append("- *(No documentation citations recorded)*")
 
-        return "\n".join(lines)
+        return "\n".join(lines)
