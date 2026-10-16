@@ -10,7 +10,7 @@ services:
       - task1-data:/data
     environment:
       - PORT=8000
-      - ENABLE_DAILY_SYNC=false
+      - ENABLE_BACKGROUND_SYNC=false
       - KNOWLEDGE_DB_PATH=/data/knowledge_brain.db
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_MODEL_TEXT=${ANTHROPIC_MODEL_TEXT:-claude-haiku-5-5}

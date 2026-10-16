@@ -15,7 +15,7 @@ graph TD
     B -- "/api/v1/ask" --> D["Task 3: Meeting-to-Scope (Port 8002)"]
 ```
 
-1. **Task 1: Knowledge Brain (Python/FastAPI)**: Crawls Brilliant Directories support documentation, extracts DOM hierarchies and screenshots, indexes chunks with `fastembed` (`BAAI/bge-small-en-v1.5`), and serves citation-grounded RAG answers with calibrated evidence scores (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`). Automatically bootstraps initial knowledge on clean Docker deployment.
+1. **Task 1: Knowledge Brain (Python/FastAPI)**: Crawls Brilliant Directories support documentation, extracts DOM hierarchies and screenshots, indexes chunks with `fastembed` (`BAAI/bge-small-en-v1.5`), and serves citation-grounded RAG answers with calibrated evidence scores (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`). Performs a bounded bootstrap of up to 25 sitemap pages on clean deployment.
 2. **Task 2: Inbox Agent (TypeScript/Express)**: Classifies client inquiries by risk, intent, and product area. Generates grounded email drafts. Enforces a strict 20-consecutive-approval autonomy gate for LOW-risk kinds while routing high-risk or low-confidence drafts to a browser-based HITL review portal.
 3. **Task 3: Meeting-to-Scope (Python/FastAPI)**: Multi-agent pipeline (Requirements Analyst -> Capability Checker -> Estimator -> SOW Writer) converting messy call transcripts into structured Statements of Work. Automatically diffs follow-up transcripts, flags scope creep, computes custom vs. discovery hours, and enforces mandatory human approval before marking proposals client-ready.
 
@@ -28,6 +28,8 @@ Start all three services across the container network with automated database bo
 ```bash
 docker compose up --build
 ```
+
+> **Deployment Note**: Docker Compose configuration has been statically reviewed, dependency-chained, and configured with persistent volumes (`task1-data`, `task2-data`, `task3-data`). Because Docker Desktop Linux daemon was unavailable in this Windows environment, full end-to-end integration was empirically verified live across local host ports (`8000`, `3000`, `8002`); container runtime execution should be validated once the Docker daemon is active.
 
 ### Service Ports & Demo Entry Points
 | Service | Container Port | Host URL | Key Endpoints / UI |
@@ -52,7 +54,7 @@ ANTHROPIC_MODEL_VISION=claude-sonnet-5-5
 TASK1_API_URL=http://127.0.0.1:8000   # Set to http://task1:8000 in Docker
 
 # Background Tasks
-ENABLE_DAILY_SYNC=false                # Set to true for 24h automatic sitemap re-indexing
+ENABLE_BACKGROUND_SYNC=false           # Set to true for 24h recurring sitemap sync
 ```
 
 ---
@@ -70,7 +72,7 @@ cd task-2-inbox-agent && npm run typecheck && npm test
 # Task 3 Multi-Agent Unit Tests (21 passed in 74.27s)
 cd task-3-meeting-sow && pytest -q
 
-# Root Cross-Service Integration Smoke Tests (6 passed in 11.90s)
+# Root Cross-Service Integration Smoke Tests (6 passed in 11.21s)
 pytest tests/test_integration_smoke.py -v
 ```
 

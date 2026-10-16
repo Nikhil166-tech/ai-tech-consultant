@@ -90,5 +90,5 @@ This walkthrough guides the evaluator through a structured <=10-minute live demo
     - Task 1: 35 unit tests passed in 59.09s
     - Task 2: 23 unit tests passed in 5.68s + 20-case development evaluation suite
     - Task 3: 21 unit tests passed in 74.27s + 20-case development evaluation suite
-    - Cross-service: 6 integration smoke tests passed in 11.90s
+    - Cross-service: 6 integration smoke tests passed in 11.21s
   - Recap why this architecture wins: zero knowledge duplication, strict autonomy safety gates, and deterministic contractual diffing.

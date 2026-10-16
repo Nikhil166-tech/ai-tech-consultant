@@ -1,6 +1,6 @@
 """
 One-shot bootstrap script for Task 1 Knowledge Brain.
-Ensures an initial bounded corpus (25 articles) is ingested if the persistent database is empty.
+Ensures a bounded bootstrap of up to 25 sitemap pages is ingested if the persistent database is empty.
 """
 import os
 import sys
@@ -38,15 +38,20 @@ def wait_for_healthy_task1() -> dict:
 
 
 def trigger_sync() -> None:
-    """Triggers bounded crawl sync on Task 1."""
+    """Triggers bounded crawl sync on Task 1 for up to 25 sitemap pages."""
     sync_url = f"{TASK1_API_URL}/api/v1/sync?max_pages=25"
-    print(f"[Bootstrap] Ingesting initial knowledge corpus via POST {sync_url}...")
+    print(f"[Bootstrap] Ingesting initial knowledge via bounded bootstrap: POST {sync_url}...")
     try:
         req = urllib.request.Request(sync_url, data=b"", headers={"User-Agent": "Task1-Bootstrap/1.0"}, method="POST")
         with urllib.request.urlopen(req, timeout=300) as resp:
             if resp.status == 200:
                 report = json.loads(resp.read().decode("utf-8"))
-                print(f"[Bootstrap] Ingestion completed successfully: {report.get('pages_crawled', 0)} pages crawled, {report.get('chunks_created', 0)} chunks created.")
+                added = report.get("added", 0)
+                updated = report.get("updated", 0)
+                unchanged = report.get("unchanged", 0)
+                total = report.get("total_in_sitemap", 0)
+                duration = report.get("duration_seconds", 0.0)
+                print(f"[Bootstrap] Ingestion completed: added={added}, updated={updated}, unchanged={unchanged}, total_in_sitemap={total} (duration: {duration:.2f}s).")
             else:
                 print(f"[Bootstrap] Ingestion returned unexpected HTTP status {resp.status}", file=sys.stderr)
                 sys.exit(1)
@@ -61,10 +66,10 @@ def main():
     active_count = health_data.get("active_articles_count", 0)
 
     if active_count > 0:
-        print(f"[Bootstrap] Persistent database already initialized with {active_count} active articles. Skipping sync.")
+        print(f"[Bootstrap] Persistent database already contains {active_count} active articles. Skipping sync.")
         sys.exit(0)
 
-    print("[Bootstrap] Database is empty (0 active articles). Triggering bootstrap ingestion...")
+    print("[Bootstrap] Database is empty (0 active articles). Triggering bounded bootstrap of up to 25 sitemap pages...")
     trigger_sync()
 
     # Verify that articles are now present

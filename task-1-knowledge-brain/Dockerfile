@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV PORT=8000
-ENV ENABLE_DAILY_SYNC=false
+ENV ENABLE_BACKGROUND_SYNC=false
 ENV KNOWLEDGE_DB_PATH=/data/knowledge_brain.db
 
 EXPOSE 8000

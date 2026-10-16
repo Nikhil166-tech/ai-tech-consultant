@@ -78,7 +78,7 @@ Total Benchmark Cases: 20
 
 ### 2.4 Root Integration Smoke Tests
 - **Test Command**: `pytest tests/test_integration_smoke.py -v`
-- **Result**: **6 passed in 11.90s**
+- **Result**: **6 passed in 11.21s**
   - `test_task1_health`: PASSED (Verified `/health` reporting healthy status, DB connectivity, and embedding provider).
   - `test_task3_can_call_task1`: PASSED (Verified Task 3 queries Task 1 over HTTP and processes citations).
   - `test_task2_can_call_task1_and_insufficient_knowledge_propagates_to_hitl`: PASSED (Verified Task 2 calls Task 1, insufficient knowledge forces `HUMAN_REVIEW_QUEUE`, `autoSendEligible=false`).
@@ -97,12 +97,15 @@ Total Benchmark Cases: 20
 
 ---
 
-## 4. Known Limitations
+## 4. Known Limitations & Environment Notes
 
-1. **Task 1 Corpus Boundary Constraints**:
-   - The Task 1 SQLite database indexes **25 articles and 31 chunks** from the official Brilliant Directories Solution Center.
+1. **Docker Runtime Verification Status**:
+   - Docker Compose configuration and container Dockerfiles have been statically reviewed and validated for syntax, dependency chains, and persistent volume paths.
+   - Because Docker Desktop Linux daemon was unavailable in this Windows shell session (`open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified`), multi-container runtime execution was simulated and verified directly against local running service processes. Full Docker container execution should be validated once the daemon is available.
+2. **Task 1 Corpus Boundary Constraints**:
+   - The Task 1 SQLite database performs a bounded bootstrap of up to 25 sitemap pages (indexing 25 articles and 31 chunks) from the official Brilliant Directories Solution Center.
    - When customer inquiries or meeting transcripts reference features outside these 25 articles (such as external third-party CRM tools, HubSpot, or custom webhook bridges), Task 1 correctly returns `is_known=False` / `evidence_status="NONE"`.
    - In Task 2, this causes `mustInclude` completeness to report 20.0% because the agent safely refuses to hallucinate platform facts not present in the indexed corpus. This is an intentional safety behavior, not a regression.
    - In Task 3, it correctly marks those capabilities as `UNKNOWN`, protecting clients from speculative scoping.
-2. **Local Test Latency**:
+3. **Local Test Latency**:
    - Generating FastEmbed vectors locally on CPU during initial cold starts adds 1–2 seconds of latency on the first query; subsequent cached queries execute in <50ms.
