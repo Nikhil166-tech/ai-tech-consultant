@@ -3,7 +3,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
-from app.models import Article, ArticleChunk, ImageMetadata, ExpertTask
+from app.models import Article, ArticleChunk, ImageMetadata, ExpertTask, SyncStatus, SyncReport
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -22,7 +22,7 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            # Articles table
+            # Articles table with content_hash
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS articles (
                 url TEXT PRIMARY KEY,
@@ -30,6 +30,7 @@ class Database:
                 category TEXT DEFAULT 'General',
                 folder TEXT DEFAULT 'General',
                 body_text TEXT NOT NULL,
+                content_hash TEXT,
                 images_json TEXT DEFAULT '[]',
                 last_modified TEXT,
                 etag TEXT,
@@ -38,7 +39,7 @@ class Database:
             )
             """)
 
-            # Chunks table for vector & lexical search
+            # Chunks table with section_heading, images_json, source_type and provenance
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS chunks (
                 id TEXT PRIMARY KEY,
@@ -46,15 +47,19 @@ class Database:
                 title TEXT NOT NULL,
                 category TEXT DEFAULT 'General',
                 folder TEXT DEFAULT 'General',
+                section_heading TEXT DEFAULT 'Overview',
                 chunk_index INTEGER,
                 text TEXT NOT NULL,
                 visual_context TEXT DEFAULT '',
+                images_json TEXT DEFAULT '[]',
                 embedding_json TEXT DEFAULT '[]',
+                source_type TEXT DEFAULT 'OFFICIAL_DOC',
+                provenance_notes TEXT,
                 FOREIGN KEY (article_url) REFERENCES articles(url) ON DELETE CASCADE
             )
             """)
 
-            # Crawler checkpoint table for politeness & resumption
+            # Crawler checkpoint table with content_hash
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS crawler_checkpoint (
                 url TEXT PRIMARY KEY,
@@ -62,11 +67,12 @@ class Database:
                 status_code INTEGER,
                 etag TEXT,
                 last_modified TEXT,
+                content_hash TEXT,
                 error TEXT
             )
             """)
 
-            # Expert Fallback Task Queue (Self-evolving memory loop)
+            # Expert Fallback Task Queue with provenance
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS expert_tasks (
                 id TEXT PRIMARY KEY,
@@ -75,8 +81,20 @@ class Database:
                 requester_email TEXT,
                 status TEXT DEFAULT 'pending',
                 expert_answer TEXT,
+                expert_id TEXT,
+                version TEXT DEFAULT '1.0',
+                provenance_notes TEXT,
                 created_at TEXT,
                 resolved_at TEXT
+            )
+            """)
+
+            # Sync Job Status Table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sync_state (
+                key TEXT PRIMARY KEY,
+                value_json TEXT,
+                updated_at TEXT
             )
             """)
             
@@ -89,13 +107,14 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-            INSERT INTO articles (url, title, category, folder, body_text, images_json, last_modified, etag, status, crawled_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO articles (url, title, category, folder, body_text, content_hash, images_json, last_modified, etag, status, crawled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 title=excluded.title,
                 category=excluded.category,
                 folder=excluded.folder,
                 body_text=excluded.body_text,
+                content_hash=excluded.content_hash,
                 images_json=excluded.images_json,
                 last_modified=excluded.last_modified,
                 etag=excluded.etag,
@@ -107,6 +126,7 @@ class Database:
                 article.category,
                 article.folder,
                 article.body_text,
+                article.content_hash,
                 images_json,
                 article.last_modified,
                 article.etag,
@@ -128,28 +148,36 @@ class Database:
             cursor = conn.cursor()
             for chunk in chunks:
                 emb_json = json.dumps(chunk.embedding or [])
+                imgs_json = json.dumps([img.model_dump() for img in chunk.images])
                 cursor.execute("""
-                INSERT INTO chunks (id, article_url, title, category, folder, chunk_index, text, visual_context, embedding_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO chunks (id, article_url, title, category, folder, section_heading, chunk_index, text, visual_context, images_json, embedding_json, source_type, provenance_notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     text=excluded.text,
+                    section_heading=excluded.section_heading,
                     visual_context=excluded.visual_context,
-                    embedding_json=excluded.embedding_json
+                    images_json=excluded.images_json,
+                    embedding_json=excluded.embedding_json,
+                    source_type=excluded.source_type,
+                    provenance_notes=excluded.provenance_notes
                 """, (
                     chunk.id,
                     chunk.article_url,
                     chunk.title,
                     chunk.category,
                     chunk.folder,
+                    chunk.section_heading,
                     chunk.chunk_index,
                     chunk.text,
                     chunk.visual_context,
-                    emb_json
+                    imgs_json,
+                    emb_json,
+                    chunk.source_type,
+                    chunk.provenance_notes
                 ))
             conn.commit()
 
     def mark_article_removed(self, url: str):
-        """Marks article as removed and purges chunks so it stops appearing in answers."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE articles SET status = 'removed' WHERE url = ?", (url,))
@@ -172,6 +200,7 @@ class Database:
                 category=row["category"],
                 folder=row["folder"],
                 body_text=row["body_text"],
+                content_hash=row["content_hash"],
                 images=images,
                 last_modified=row["last_modified"],
                 etag=row["etag"],
@@ -196,32 +225,39 @@ class Database:
             chunks = []
             for row in cursor.fetchall():
                 emb = json.loads(row["embedding_json"]) if row["embedding_json"] else []
+                imgs_data = json.loads(row["images_json"]) if row["images_json"] else []
+                imgs = [ImageMetadata(**img) for img in imgs_data]
                 chunks.append(ArticleChunk(
                     id=row["id"],
                     article_url=row["article_url"],
                     title=row["title"],
                     category=row["category"],
                     folder=row["folder"],
+                    section_heading=row["section_heading"] if "section_heading" in row.keys() else "Overview",
                     chunk_index=row["chunk_index"],
                     text=row["text"],
                     visual_context=row["visual_context"],
-                    embedding=emb
+                    images=imgs,
+                    embedding=emb,
+                    source_type=row["source_type"] if "source_type" in row.keys() else "OFFICIAL_DOC",
+                    provenance_notes=row["provenance_notes"] if "provenance_notes" in row.keys() else None
                 ))
             return chunks
 
-    def save_crawler_checkpoint(self, url: str, status_code: int, etag: Optional[str] = None, last_modified: Optional[str] = None, error: Optional[str] = None):
+    def save_crawler_checkpoint(self, url: str, status_code: int, etag: Optional[str] = None, last_modified: Optional[str] = None, content_hash: Optional[str] = None, error: Optional[str] = None):
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-            INSERT INTO crawler_checkpoint (url, last_checked, status_code, etag, last_modified, error)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO crawler_checkpoint (url, last_checked, status_code, etag, last_modified, content_hash, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 last_checked=excluded.last_checked,
                 status_code=excluded.status_code,
                 etag=excluded.etag,
                 last_modified=excluded.last_modified,
+                content_hash=excluded.content_hash,
                 error=excluded.error
-            """, (url, iso_now(), status_code, etag, last_modified, error))
+            """, (url, iso_now(), status_code, etag, last_modified, content_hash, error))
             conn.commit()
 
     def get_crawler_checkpoint(self, url: str) -> Optional[Dict[str, Any]]:
@@ -250,7 +286,7 @@ class Database:
             created_at=now
         )
 
-    def resolve_expert_task(self, task_id: str, expert_answer: str) -> Optional[ExpertTask]:
+    def resolve_expert_task(self, task_id: str, expert_answer: str, expert_id: str = "expert_reviewer", version: str = "1.0", provenance_notes: str = "Manual product specialist review") -> Optional[ExpertTask]:
         now = iso_now()
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -261,31 +297,33 @@ class Database:
             
             cursor.execute("""
             UPDATE expert_tasks 
-            SET status = 'resolved', expert_answer = ?, resolved_at = ?
+            SET status = 'resolved', expert_answer = ?, expert_id = ?, version = ?, provenance_notes = ?, resolved_at = ?
             WHERE id = ?
-            """, (expert_answer, now, task_id))
+            """, (expert_answer, expert_id, version, provenance_notes, now, task_id))
 
-            # Integrate expert answer into active knowledge chunks!
             q = row["question"]
             expert_chunk_id = f"expert_{task_id}"
+            provenance_header = f"VERIFIED HUMAN RESOLUTION [Ticket: {task_id} | Verified by: {expert_id} | Ver: {version}]"
+            
             cursor.execute("""
-            INSERT INTO chunks (id, article_url, title, category, folder, chunk_index, text, visual_context, embedding_json)
-            VALUES (?, ?, ?, 'Expert Knowledge', 'Verified Resolutions', 0, ?, 'Verified human expert answer', '[]')
-            ON CONFLICT(id) DO UPDATE SET text=excluded.text
+            INSERT INTO chunks (id, article_url, title, category, folder, section_heading, chunk_index, text, visual_context, images_json, embedding_json, source_type, provenance_notes)
+            VALUES (?, ?, ?, 'Expert Knowledge', 'Verified Resolutions', 'Specialist Clarification', 0, ?, 'Human expert verified resolution', '[]', '[]', 'EXPERT_RESOLUTION', ?)
+            ON CONFLICT(id) DO UPDATE SET text=excluded.text, provenance_notes=excluded.provenance_notes
             """, (
                 expert_chunk_id,
                 f"expert://resolution/{task_id}",
                 f"Expert Answer: {q[:50]}...",
-                f"Question: {q}\nExpert Resolution: {expert_answer}"
+                f"{provenance_header}\nQuestion: {q}\nExpert Answer: {expert_answer}",
+                provenance_notes
             ))
             cursor.execute("""
-            INSERT INTO articles (url, title, category, folder, body_text, status, crawled_at)
-            VALUES (?, ?, 'Expert Knowledge', 'Verified Resolutions', ?, 'active', ?)
+            INSERT INTO articles (url, title, category, folder, body_text, content_hash, status, crawled_at)
+            VALUES (?, ?, 'Expert Knowledge', 'Verified Resolutions', ?, 'expert_hash', 'active', ?)
             ON CONFLICT(url) DO UPDATE SET body_text=excluded.body_text
             """, (
                 f"expert://resolution/{task_id}",
                 f"Expert Answer: {q[:50]}...",
-                f"Question: {q}\nExpert Resolution: {expert_answer}",
+                f"{provenance_header}\nQuestion: {q}\nExpert Answer: {expert_answer}",
                 now
             ))
             conn.commit()
@@ -297,6 +335,9 @@ class Database:
                 requester_email=row["requester_email"],
                 status="resolved",
                 expert_answer=expert_answer,
+                expert_id=expert_id,
+                version=version,
+                provenance_notes=provenance_notes,
                 created_at=row["created_at"],
                 resolved_at=now
             )
@@ -316,7 +357,36 @@ class Database:
                     requester_email=row["requester_email"],
                     status=row["status"],
                     expert_answer=row["expert_answer"],
+                    expert_id=row["expert_id"] if "expert_id" in row.keys() else None,
+                    version=row["version"] if "version" in row.keys() else "1.0",
+                    provenance_notes=row["provenance_notes"] if "provenance_notes" in row.keys() else None,
                     created_at=row["created_at"],
                     resolved_at=row["resolved_at"]
                 ) for row in cursor.fetchall()
             ]
+
+    def set_sync_status(self, sync_status: SyncStatus):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            INSERT INTO sync_state (key, value_json, updated_at)
+            VALUES ('latest', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+            """, (sync_status.model_dump_json(), iso_now()))
+            conn.commit()
+
+    def get_sync_status(self) -> SyncStatus:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value_json FROM sync_state WHERE key = 'latest'")
+            row = cursor.fetchone()
+            if row and row["value_json"]:
+                data = json.loads(row["value_json"])
+                return SyncStatus(**data)
+            return SyncStatus(
+                status="idle",
+                current_step="No sync runs yet",
+                pages_crawled=0,
+                total_sitemap_urls=0,
+                updated_at=iso_now()
+            )

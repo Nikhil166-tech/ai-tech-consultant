@@ -1,44 +1,77 @@
-import asyncio
+﻿import asyncio
 import logging
 import re
+import hashlib
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
-from bs4 import BeautifulSoup
-from app.models import Article, ArticleChunk, ImageMetadata, SyncReport
+from bs4 import BeautifulSoup, Tag
+from app.models import Article, ArticleChunk, ImageMetadata, SyncReport, SyncStatus
 from app.database import Database
 from app.vision import VisionAnalyzer
+from app.retrieval import SemanticFeatureEmbedding
+from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_SITEMAP_URL = "https://support.brilliantdirectories.com/support/sitemap.xml"
 
 class PoliteCrawler:
     def __init__(
         self,
         db: Database,
-        sitemap_url: str = DEFAULT_SITEMAP_URL,
-        delay_seconds: float = 0.3,
-        max_concurrent: int = 3,
+        sitemap_url: Optional[str] = None,
+        delay_seconds: Optional[float] = None,
+        max_concurrent: Optional[int] = None,
         vision_analyzer: Optional[VisionAnalyzer] = None
     ):
         self.db = db
-        self.sitemap_url = sitemap_url
-        self.delay_seconds = delay_seconds
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.sitemap_url = sitemap_url or settings.default_sitemap_url
+        self.delay_seconds = delay_seconds if delay_seconds is not None else settings.crawler_delay_seconds
+        self.semaphore = asyncio.Semaphore(max_concurrent or settings.max_concurrent_requests)
         self.vision = vision_analyzer or VisionAnalyzer()
+        self.embedder = SemanticFeatureEmbedding()
         self.headers = {
-            "User-Agent": "AITechConsultantBot/1.0 (Ethical Capstone Crawler; support-sync; contact: info@consultant.ai)"
+            "User-Agent": "AITechConsultantBot/2.0 (Ethical Capstone Crawler; support-sync; contact: info@consultant.ai)"
         }
 
-    async def fetch_sitemap_urls(self) -> List[Dict[str, str]]:
-        logger.info(f"Fetching sitemap from {self.sitemap_url}")
-        async with httpx.AsyncClient(timeout=15.0, headers=self.headers, follow_redirects=True) as client:
-            resp = await client.get(self.sitemap_url)
-            resp.raise_for_status()
-            
-            root = ET.fromstring(resp.content)
+    async def _fetch_with_retry(self, client: httpx.AsyncClient, url: str) -> Optional[httpx.Response]:
+        """Fetches URL with configurable exponential backoff retrying only 5xx/network errors."""
+        max_retries = settings.max_retries
+        backoff = settings.retry_backoff_factor
+
+        for attempt in range(max_retries):
+            try:
+                resp = await client.get(url, headers=self.headers, follow_redirects=True)
+                if resp.status_code == 200:
+                    return resp
+                elif resp.status_code in [408, 429, 500, 502, 503, 504]:
+                    await asyncio.sleep(backoff * (2 ** attempt))
+                else:
+                    # 4xx client errors (404, 403, 401) should NOT be retried
+                    return resp
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError):
+                await asyncio.sleep(backoff * (2 ** attempt))
+            except Exception as e:
+                logger.error(f"Unexpected request error for {url}: {e}")
+                return None
+        return None
+
+    async def fetch_sitemap_urls(self, custom_url: Optional[str] = None) -> List[Dict[str, str]]:
+        target_url = custom_url or self.sitemap_url
+        logger.info(f"Fetching sitemap from {target_url}")
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await self._fetch_with_retry(client, target_url)
+            if not resp or resp.status_code != 200:
+                logger.error(f"Failed to fetch sitemap: status {getattr(resp, 'status_code', 'unknown')}")
+                return []
+
+            try:
+                root = ET.fromstring(resp.content)
+            except ET.ParseError as e:
+                logger.error(f"Malformed XML in sitemap at {target_url}: {e}")
+                return []
+
             namespace = ""
             if root.tag.startswith("{"):
                 namespace = root.tag.split("}")[0] + "}"
@@ -48,8 +81,8 @@ class PoliteCrawler:
                 sitemap_locs = [elem.text for elem in root.findall(f".//{namespace}loc") if elem.text]
                 for sub_loc in sitemap_locs:
                     try:
-                        sub_resp = await client.get(sub_loc)
-                        if sub_resp.status_code == 200:
+                        sub_resp = await self._fetch_with_retry(client, sub_loc)
+                        if sub_resp and sub_resp.status_code == 200:
                             sub_root = ET.fromstring(sub_resp.content)
                             for url_elem in sub_root.findall(f".//{namespace}url"):
                                 loc = url_elem.find(f"{namespace}loc")
@@ -60,7 +93,7 @@ class PoliteCrawler:
                                         "lastmod": lastmod.text.strip() if lastmod is not None and lastmod.text else ""
                                     })
                     except Exception as e:
-                        logger.warning(f"Error fetching sub-sitemap {sub_loc}: {e}")
+                        logger.warning(f"Error parsing sub-sitemap {sub_loc}: {e}")
             else:
                 for url_elem in root.findall(f".//{namespace}url"):
                     loc = url_elem.find(f"{namespace}loc")
@@ -70,29 +103,41 @@ class PoliteCrawler:
                             "url": loc.text.strip(),
                             "lastmod": lastmod.text.strip() if lastmod is not None and lastmod.text else ""
                         })
-            
-            logger.info(f"Discovered {len(results)} URLs from sitemap")
+
             return results
 
-    async def crawl_article(self, url: str, lastmod: Optional[str] = None, force: bool = False) -> Optional[Article]:
-        checkpoint = self.db.get_crawler_checkpoint(url)
-        if not force and checkpoint and checkpoint.get("status_code") == 200:
-            if lastmod and checkpoint.get("last_modified") == lastmod:
-                return None
+    def _compute_hash(self, text: str) -> str:
+        return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+    async def crawl_article(
+        self,
+        url: str,
+        lastmod: Optional[str] = None,
+        force: bool = False
+    ) -> Tuple[Optional[Article], str]:
+        """
+        Crawls a single article. Returns (Article or None, classification)
+        classification is one of: 'NEW', 'CHANGED', 'UNCHANGED', 'ERROR'
+        """
+        existing = self.db.get_article(url)
 
         async with self.semaphore:
             await asyncio.sleep(self.delay_seconds)
             try:
-                async with httpx.AsyncClient(timeout=15.0, headers=self.headers, follow_redirects=True) as client:
-                    resp = await client.get(url)
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await self._fetch_with_retry(client, url)
+                    if not resp:
+                        self.db.save_crawler_checkpoint(url, 500, error="Network / Retry exhaustion")
+                        return None, "ERROR"
+
                     etag = resp.headers.get("etag")
                     last_modified = lastmod or resp.headers.get("last-modified")
 
                     if resp.status_code != 200:
-                        self.db.save_crawler_checkpoint(url, resp.status_code, etag, last_modified, f"HTTP {resp.status_code}")
-                        return None
+                        self.db.save_crawler_checkpoint(url, resp.status_code, etag, last_modified, error=f"HTTP {resp.status_code}")
+                        return None, "ERROR"
 
-                    soup = BeautifulSoup(resp.content, "lxml")
+                    soup = BeautifulSoup(resp.content, "html.parser")
 
                     title = "Help Article"
                     title_tag = soup.find("h1") or soup.find("title")
@@ -118,128 +163,287 @@ class PoliteCrawler:
                     )
                     
                     if not body_container:
-                        return None
+                        return None, "ERROR"
 
-                    images: List[ImageMetadata] = []
-                    img_tags = body_container.find_all("img")
-                    for img in img_tags:
-                        src = img.get("src")
-                        if not src:
-                            continue
-                        if not src.startswith("http"):
-                            src = f"https://support.brilliantdirectories.com{src}" if src.startswith("/") else f"https://support.brilliantdirectories.com/{src}"
-                        
-                        parent = img.find_parent(["p", "div", "li"])
-                        context_text = parent.get_text(strip=True) if parent else ""
-                        img_meta = await self.vision.analyze_image(src, title, context_text)
-                        images.append(img_meta)
+                    # Section-aware chunking & local screenshot binding
+                    chunks, all_images, full_text = await self._section_aware_chunking(url, title, category, folder, body_container)
+                    content_hash = self._compute_hash(full_text)
 
-                    for tag in body_container(["script", "style", "nav", "footer", "form"]):
-                        tag.decompose()
-                    
-                    body_text = body_container.get_text(separator="\n", strip=True)
+                    # Classify correctly based on content_hash
+                    if existing is None:
+                        classification = "NEW"
+                    elif existing.content_hash == content_hash:
+                        classification = "UNCHANGED"
+                    else:
+                        classification = "CHANGED"
 
                     article = Article(
                         url=url,
                         title=title,
                         category=category,
                         folder=folder,
-                        body_text=body_text,
-                        images=images,
+                        body_text=full_text,
+                        content_hash=content_hash,
+                        images=all_images,
                         last_modified=last_modified,
                         etag=etag,
                         status="active",
                         crawled_at=datetime.now(timezone.utc)
                     )
 
+                    # Save to DB & embed chunks
                     self.db.upsert_article(article)
-                    self.db.save_crawler_checkpoint(url, 200, etag, last_modified)
+                    self.db.save_crawler_checkpoint(url, 200, etag, last_modified, content_hash=content_hash)
 
-                    chunks = self._chunk_article(article)
                     self.db.delete_chunks_for_article(article.url)
                     self.db.save_chunks(chunks)
 
-                    return article
+                    return article, classification
+
             except Exception as e:
                 logger.error(f"Error crawling {url}: {e}")
                 self.db.save_crawler_checkpoint(url, 500, error=str(e))
-                return None
+                return None, "ERROR"
 
-    def _chunk_article(self, article: Article, chunk_size: int = 400, overlap: int = 80) -> List[ArticleChunk]:
-        words = article.body_text.split()
-        if not words:
-            return []
+    async def _section_aware_chunking(
+        self,
+        article_url: str,
+        title: str,
+        category: str,
+        folder: str,
+        container: Tag
+    ) -> Tuple[List[ArticleChunk], List[ImageMetadata], str]:
+        """
+        Extracts sections based on headings (h1, h2, h3, h4), keeping tables and lists intact,
+        and binds images strictly to their local section/DOM context.
+        """
+        # Decompose scripts and useless elements
+        for tag in container(["script", "style", "nav", "footer", "form"]):
+            tag.decompose()
 
+        sections: List[Dict[str, Any]] = []
+        current_heading = "Overview"
+        current_elements: List[str] = []
+        current_section_images: List[ImageMetadata] = []
+        all_images: List[ImageMetadata] = []
+
+        elements = container.find_all(["h1", "h2", "h3", "h4", "p", "ul", "ol", "table", "img"], recursive=True)
+
+        for el in elements:
+            if el.name in ["h1", "h2", "h3", "h4"]:
+                # Flush previous section
+                if current_elements or current_section_images:
+                    sections.append({
+                        "heading": current_heading,
+                        "text": "\n".join(current_elements).strip(),
+                        "images": current_section_images
+                    })
+                    current_elements = []
+                    current_section_images = []
+                current_heading = el.get_text(strip=True) or current_heading
+
+            elif el.name == "img":
+                src = el.get("src")
+                if src:
+                    if not src.startswith("http"):
+                        src = f"https://support.brilliantdirectories.com{src}" if src.startswith("/") else f"https://support.brilliantdirectories.com/{src}"
+                    parent = el.find_parent(["p", "div", "li"])
+                    context = parent.get_text(strip=True) if parent else ""
+                    img_meta = await self.vision.analyze_image(src, title, context, section_heading=current_heading)
+                    current_section_images.append(img_meta)
+                    all_images.append(img_meta)
+
+            elif el.name in ["ul", "ol"]:
+                # Keep ordered/unordered list together
+                items = [f"- {li.get_text(strip=True)}" for li in el.find_all("li") if li.get_text(strip=True)]
+                if items:
+                    current_elements.append("\n".join(items))
+
+            elif el.name == "table":
+                # Keep table structured
+                rows = []
+                for tr in el.find_all("tr"):
+                    cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                    if cells:
+                        rows.append(" | ".join(cells))
+                if rows:
+                    current_elements.append("\n[Table Data]\n" + "\n".join(rows))
+
+            elif el.name == "p":
+                p_text = el.get_text(strip=True)
+                if p_text:
+                    current_elements.append(p_text)
+
+        # Flush final section
+        if current_elements or current_section_images:
+            sections.append({
+                "heading": current_heading,
+                "text": "\n".join(current_elements).strip(),
+                "images": current_section_images
+            })
+
+        # Fallback if no explicit headings found
+        if not sections:
+            sections.append({
+                "heading": "Overview",
+                "text": container.get_text(separator="\n", strip=True),
+                "images": all_images
+            })
+
+        # Generate chunks from sections
         chunks: List[ArticleChunk] = []
         chunk_idx = 0
-        i = 0
+        full_text_blocks = []
 
-        visual_summary = ""
-        if article.images:
-            visual_summary = "Visual Steps / Screenshots: " + " | ".join(
-                [f"[{img.caption}]" for img in article.images if img.caption]
-            )
+        for sec in sections:
+            sec_heading = sec["heading"]
+            sec_text = sec["text"]
+            sec_images = sec["images"]
 
-        while i < len(words):
-            chunk_words = words[i:i + chunk_size]
-            chunk_text = " ".join(chunk_words)
-            chunk_id = f"{article.url}#chunk-{chunk_idx}"
+            if not sec_text and not sec_images:
+                continue
 
-            chunks.append(ArticleChunk(
-                id=chunk_id,
-                article_url=article.url,
-                title=article.title,
-                category=article.category or "General",
-                folder=article.folder or "General",
-                chunk_index=chunk_idx,
-                text=chunk_text,
-                visual_context=visual_summary,
-                embedding=[]
-            ))
-            chunk_idx += 1
-            i += (chunk_size - overlap)
+            full_text_blocks.append(f"## {sec_heading}\n{sec_text}")
 
-        return chunks
+            visual_summary = ""
+            if sec_images:
+                visual_summary = "UI Screenshots in Section: " + " | ".join(
+                    [f"[{img.caption}]" for img in sec_images if img.caption]
+                )
+
+            # Split large sections into max 350-word chunks if too long, retaining heading context
+            words = sec_text.split()
+            if len(words) <= 350:
+                chunk_text = f"[{sec_heading}]\n{sec_text}" if sec_heading != "Overview" else sec_text
+                chunk_id = f"{article_url}#sec-{chunk_idx}"
+                emb = self.embedder.embed_text(f"{title} {sec_heading} {chunk_text}")
+
+                chunks.append(ArticleChunk(
+                    id=chunk_id,
+                    article_url=article_url,
+                    title=title,
+                    category=category,
+                    folder=folder,
+                    section_heading=sec_heading,
+                    chunk_index=chunk_idx,
+                    text=chunk_text,
+                    visual_context=visual_summary,
+                    images=sec_images,
+                    embedding=emb,
+                    source_type="OFFICIAL_DOC"
+                ))
+                chunk_idx += 1
+            else:
+                # Sub-chunking long sections with overlap
+                i = 0
+                while i < len(words):
+                    sub_words = words[i:i + 300]
+                    sub_text = " ".join(sub_words)
+                    chunk_text = f"[{sec_heading} (part)]\n{sub_text}"
+                    chunk_id = f"{article_url}#sec-{chunk_idx}"
+                    emb = self.embedder.embed_text(f"{title} {sec_heading} {chunk_text}")
+
+                    chunks.append(ArticleChunk(
+                        id=chunk_id,
+                        article_url=article_url,
+                        title=title,
+                        category=category,
+                        folder=folder,
+                        section_heading=sec_heading,
+                        chunk_index=chunk_idx,
+                        text=chunk_text,
+                        visual_context=visual_summary,
+                        images=sec_images,
+                        embedding=emb,
+                        source_type="OFFICIAL_DOC"
+                    ))
+                    chunk_idx += 1
+                    i += 240  # 60 words overlap
+
+        full_article_text = "\n\n".join(full_text_blocks)
+        return chunks, all_images, full_article_text
 
     async def sync_daily(self, max_pages: Optional[int] = None) -> SyncReport:
+        """
+        Crucial requirement 1: ALWAYS use the COMPLETE successfully fetched sitemap
+        for deleted-page detection. max_pages limits only pages crawled in this run,
+        NEVER the deletion comparison.
+        """
         start_time = datetime.now(timezone.utc)
-        sitemap_entries = await self.fetch_sitemap_urls()
-        if max_pages:
-            sitemap_entries = sitemap_entries[:max_pages]
+        self.db.set_sync_status(SyncStatus(
+            status="running",
+            current_step="Fetching complete sitemap",
+            updated_at=start_time.isoformat()
+        ))
 
-        sitemap_urls = {entry["url"]: entry.get("lastmod") for entry in sitemap_entries}
+        sitemap_entries = await self.fetch_sitemap_urls()
+        total_in_sitemap = len(sitemap_entries)
+
+        # 1. COMPLETE sitemap set for deletion detection
+        full_sitemap_urls = {entry["url"] for entry in sitemap_entries}
         active_db_urls = set(self.db.get_all_active_urls())
 
-        added_or_updated = 0
-        unchanged = 0
-        removed = 0
+        removed_count = 0
+        if full_sitemap_urls:
+            # Only run deletion if sitemap fetch succeeded
+            for db_url in active_db_urls:
+                if db_url not in full_sitemap_urls and not db_url.startswith("expert://"):
+                    logger.info(f"Article removed from complete sitemap, purging: {db_url}")
+                    self.db.mark_article_removed(db_url)
+                    removed_count += 1
 
-        for db_url in active_db_urls:
-            if db_url not in sitemap_urls and not db_url.startswith("expert://"):
-                logger.info(f"Article removed from sitemap, purging: {db_url}")
-                self.db.mark_article_removed(db_url)
-                removed += 1
+        # 2. Limit crawl slice by max_pages
+        crawl_entries = sitemap_entries[:max_pages] if max_pages else sitemap_entries
+
+        added_count = 0
+        updated_count = 0
+        unchanged_count = 0
+
+        self.db.set_sync_status(SyncStatus(
+            status="running",
+            current_step=f"Processing {len(crawl_entries)} URLs",
+            total_sitemap_urls=total_in_sitemap,
+            pages_crawled=0,
+            updated_at=datetime.now(timezone.utc).isoformat()
+        ))
 
         tasks = []
-        for url, lastmod in sitemap_urls.items():
-            checkpoint = self.db.get_crawler_checkpoint(url)
-            if checkpoint and checkpoint.get("status_code") == 200 and checkpoint.get("last_modified") == lastmod and lastmod:
-                unchanged += 1
-            else:
-                tasks.append(self.crawl_article(url, lastmod))
+        for entry in crawl_entries:
+            url = entry["url"]
+            lastmod = entry.get("lastmod")
+            tasks.append(self.crawl_article(url, lastmod))
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in results:
-                if isinstance(r, Article) and r is not None:
-                    added_or_updated += 1
+            for res in results:
+                if isinstance(res, tuple) and len(res) == 2:
+                    art, classification = res
+                    if classification == "NEW":
+                        added_count += 1
+                    elif classification == "CHANGED":
+                        updated_count += 1
+                    elif classification == "UNCHANGED":
+                        unchanged_count += 1
 
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-        return SyncReport(
-            total_in_sitemap=len(sitemap_entries),
-            added=added_or_updated,
-            updated=0,
-            removed=removed,
-            unchanged=unchanged,
-            duration_seconds=duration
+        report = SyncReport(
+            total_in_sitemap=total_in_sitemap,
+            added=added_count,
+            updated=updated_count,
+            removed=removed_count,
+            unchanged=unchanged_count,
+            duration_seconds=round(duration, 2)
         )
+
+        self.db.set_sync_status(SyncStatus(
+            status="completed",
+            current_step="Sync complete",
+            pages_crawled=len(crawl_entries),
+            total_sitemap_urls=total_in_sitemap,
+            last_report=report,
+            updated_at=datetime.now(timezone.utc).isoformat()
+        ))
+
+        return report
+
+
