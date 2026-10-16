@@ -78,6 +78,42 @@ describe("AutonomyEngine", () => {
     expect(engine.canAutoSend(kind)).toBe(true);
   });
 
+  it("MEDIUM, HIGH, and CRITICAL kinds must never enter an enabled autonomy state, even after 20 approvals", () => {
+    const riskLevelsToTest = [RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL];
+
+    for (const risk of riskLevelsToTest) {
+      const kindKey = formatKindKey(Intent.HOW_TO_CONFIGURE, risk, ProductArea.PAYMENTS_GATEWAYS);
+      const kind = {
+        intent: Intent.HOW_TO_CONFIGURE,
+        riskLevel: risk,
+        productArea: ProductArea.PAYMENTS_GATEWAYS,
+        key: kindKey
+      };
+
+      for (let i = 1; i <= 22; i++) {
+        const review: HumanReviewRecord = {
+          id: `rev_${risk}_${i}`,
+          emailId: `em_${risk}_${i}`,
+          draftId: `dr_${risk}_${i}`,
+          kindKey,
+          action: "APPROVE",
+          originalDraft: "Sample text",
+          finalSentReply: "Sample text",
+          wasUnchanged: true,
+          reviewerId: "specialist_qa",
+          reviewedAt: new Date().toISOString()
+        };
+        engine.recordHumanReview(review);
+      }
+
+      const state = engine.getState(kindKey);
+      expect(state.unchangedStreak).toBe(22);
+      // MUST NEVER enter autonomyEnabled = true
+      expect(state.autonomyEnabled).toBe(false);
+      expect(engine.canAutoSend(kind)).toBe(false);
+    }
+  });
+
   it("unknown product area cannot auto-send even after 20 unchanged approvals", () => {
     const unknownKindKey = formatKindKey(Intent.HOW_TO_CONFIGURE, RiskLevel.LOW, ProductArea.UNKNOWN);
     const unknownKind = {
@@ -192,16 +228,5 @@ describe("AutonomyEngine", () => {
     expect(revokedState.lastFailureReason).toBe("Customer CSAT dropped below 85% in weekly spot audit");
     expect(revokedState.lastRevokedReason).toContain("qa_lead_carol");
     expect(engine.canAutoSend(kind)).toBe(false);
-  });
-
-  it("high-risk kinds are never eligible for auto-send even with high streak", () => {
-    const highRiskKind = {
-      intent: Intent.BILLING_ISSUE,
-      riskLevel: RiskLevel.HIGH,
-      productArea: ProductArea.PAYMENTS_GATEWAYS,
-      key: formatKindKey(Intent.BILLING_ISSUE, RiskLevel.HIGH, ProductArea.PAYMENTS_GATEWAYS)
-    };
-
-    expect(engine.canAutoSend(highRiskKind)).toBe(false);
   });
 });

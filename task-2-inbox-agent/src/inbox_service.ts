@@ -34,12 +34,14 @@ export class InboxService {
     autonomyEngine?: AutonomyEngine;
     feedbackStore?: FeedbackStore;
     interactionStore?: InteractionStore;
+    allowDeterministicAutoSend?: boolean;
+    draftGenerator?: DraftGenerator;
   }) {
     this.classifier = new EmailClassifier();
     this.knowledgeClient = options?.knowledgeClient || new Task1KnowledgeClient();
     this.feedbackStore = options?.feedbackStore || new FeedbackStore();
     this.interactionStore = options?.interactionStore || new InteractionStore();
-    this.draftGenerator = new DraftGenerator({ feedbackStore: this.feedbackStore });
+    this.draftGenerator = options?.draftGenerator || new DraftGenerator({ feedbackStore: this.feedbackStore, allowDeterministicAutoSend: options?.allowDeterministicAutoSend });
     this.autonomyEngine = options?.autonomyEngine || new AutonomyEngine();
   }
 

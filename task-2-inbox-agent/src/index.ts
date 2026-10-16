@@ -4,7 +4,7 @@ dotenv.config();
 import { InboxService } from "./inbox_service.js";
 import { createServer } from "./api/server.js";
 
-const port = process.env.PORT || 8001;
+const port = process.env.PORT || 3000;
 const service = new InboxService();
 const app = createServer(service);
 

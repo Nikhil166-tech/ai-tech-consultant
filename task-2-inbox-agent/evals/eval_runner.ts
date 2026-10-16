@@ -6,8 +6,8 @@ import { HumanReviewRecord } from "../src/types/index.js";
 /**
  * SYNTHETIC TRAINING FIXTURES:
  * Distinct from the held-out 20 benchmark eval cases.
- * Used strictly to evaluate whether prompt v2 correctly retrieves and leverages
- * past reviewer feedback and corrections without contaminating the held-out evaluation set.
+ * Rule: Any record marked APPROVE + wasUnchanged=true must have normalized-identical original and final text.
+ * Any record where text was modified is strictly marked EDIT + wasUnchanged=false.
  */
 export const SYNTHETIC_TRAINING_EXEMPLARS: HumanReviewRecord[] = [
   {
@@ -41,12 +41,25 @@ export const SYNTHETIC_TRAINING_EXEMPLARS: HumanReviewRecord[] = [
     emailId: "train_email_03",
     draftId: "train_draft_03",
     kindKey: "HOW_TO_CONFIGURE:LOW:MEMBERSHIP_PLANS",
-    action: "APPROVE",
+    action: "EDIT",
     originalDraft: "To manage plans, navigate to Finance > Membership Plans.",
     finalSentReply: "To manage plans, navigate to Finance > Membership Plans. Please let us know if you have any questions while testing these settings.",
-    wasUnchanged: true,
+    wasUnchanged: false,
+    diffSummary: "Reviewer added closing support offer.",
     reviewerId: "synthetic_specialist_alice",
     reviewedAt: new Date(Date.now() - 21600000).toISOString()
+  },
+  {
+    id: "synth_train_04",
+    emailId: "train_email_04",
+    draftId: "train_draft_04",
+    kindKey: "HOW_TO_CONFIGURE:LOW:FORMS_RECAPTCHA",
+    action: "APPROVE",
+    originalDraft: "To enable Google reCAPTCHA, navigate to Settings > General Settings > Integrations and paste your site key.",
+    finalSentReply: "To enable Google reCAPTCHA, navigate to Settings > General Settings > Integrations and paste your site key.",
+    wasUnchanged: true,
+    reviewerId: "synthetic_specialist_bob",
+    reviewedAt: new Date(Date.now() - 10800000).toISOString()
   }
 ];
 
@@ -55,8 +68,10 @@ interface VersionEvalMetrics {
   totalCases: number;
   intentAccuracy: number;
   riskAccuracy: number;
+  areaAccuracy: number;
   routingAccuracy: number;
-  contentRulePassRate: number;
+  contentSafetyPassRate: number;
+  contentCompletenessRate: number;
   feedbackIncorporationRate: number;
   averageLatencyMs: number;
 }
@@ -84,14 +99,22 @@ export async function runTask2Evaluations(): Promise<{ v1: VersionEvalMetrics; v
     process.exit(1);
   }
 
+  const allowDeterministic = process.env.ALLOW_DETERMINISTIC_AUTO_SEND === "true" || !process.env.ANTHROPIC_API_KEY;
+
   // 1. Run Baseline v1 (Zero few-shot exemplars)
   console.log("\n[1/2] Evaluating Baseline Prompt v1 on Held-Out Cases (Zero Few-Shot Exemplars)...");
-  const inboxV1 = new InboxService({ knowledgeClient: realKnowledgeClient });
+  const inboxV1 = new InboxService({
+    knowledgeClient: realKnowledgeClient,
+    allowDeterministicAutoSend: allowDeterministic
+  });
   const v1Results = await evaluateVersion(inboxV1, "v1_baseline");
 
   // 2. Ingest Distinct Synthetic Training Exemplars (Held-out separation)
   console.log("\n[2/2] Ingesting Labeled Synthetic Training Exemplars into FeedbackStore...");
-  const inboxV2 = new InboxService({ knowledgeClient: realKnowledgeClient });
+  const inboxV2 = new InboxService({
+    knowledgeClient: realKnowledgeClient,
+    allowDeterministicAutoSend: allowDeterministic
+  });
   for (const exemplar of SYNTHETIC_TRAINING_EXEMPLARS) {
     inboxV2.feedbackStore.saveReviewRecord(exemplar);
   }
@@ -100,18 +123,20 @@ export async function runTask2Evaluations(): Promise<{ v1: VersionEvalMetrics; v
   console.log("[2/2] Evaluating Feedback-Enhanced Prompt v2 on Held-Out Cases (With Feedback Guidance)...");
   const v2Results = await evaluateVersion(inboxV2, "v2_feedback_enhanced");
 
-  // Output Empirical Results Table
-  console.log("\n================================================================================");
-  console.log("                 ACTUAL EMPIRICAL TASK 2 EVALUATION RESULTS                     ");
-  console.log("================================================================================");
+  // Output Empirical Results Table (Distinct, honest metrics)
+  console.log("\n=========================================================================================================");
+  console.log("                               ACTUAL EMPIRICAL TASK 2 EVALUATION RESULTS                                ");
+  console.log("=========================================================================================================");
   console.table([
     {
       Version: v1Results.version,
       "Cases": v1Results.totalCases,
       "Intent Acc": `${(v1Results.intentAccuracy * 100).toFixed(1)}%`,
       "Risk Acc": `${(v1Results.riskAccuracy * 100).toFixed(1)}%`,
+      "Area Acc": `${(v1Results.areaAccuracy * 100).toFixed(1)}%`,
       "Routing Acc": `${(v1Results.routingAccuracy * 100).toFixed(1)}%`,
-      "Content Safety": `${(v1Results.contentRulePassRate * 100).toFixed(1)}%`,
+      "Safety Pass": `${(v1Results.contentSafetyPassRate * 100).toFixed(1)}%`,
+      "Completeness": `${(v1Results.contentCompletenessRate * 100).toFixed(1)}%`,
       "Feedback Incorp": `${(v1Results.feedbackIncorporationRate * 100).toFixed(1)}%`,
       "Avg Latency": `${v1Results.averageLatencyMs.toFixed(1)}ms`
     },
@@ -120,8 +145,10 @@ export async function runTask2Evaluations(): Promise<{ v1: VersionEvalMetrics; v
       "Cases": v2Results.totalCases,
       "Intent Acc": `${(v2Results.intentAccuracy * 100).toFixed(1)}%`,
       "Risk Acc": `${(v2Results.riskAccuracy * 100).toFixed(1)}%`,
+      "Area Acc": `${(v2Results.areaAccuracy * 100).toFixed(1)}%`,
       "Routing Acc": `${(v2Results.routingAccuracy * 100).toFixed(1)}%`,
-      "Content Safety": `${(v2Results.contentRulePassRate * 100).toFixed(1)}%`,
+      "Safety Pass": `${(v2Results.contentSafetyPassRate * 100).toFixed(1)}%`,
+      "Completeness": `${(v2Results.contentCompletenessRate * 100).toFixed(1)}%`,
       "Feedback Incorp": `${(v2Results.feedbackIncorporationRate * 100).toFixed(1)}%`,
       "Avg Latency": `${v2Results.averageLatencyMs.toFixed(1)}ms`
     }
@@ -136,8 +163,10 @@ async function evaluateVersion(
 ): Promise<VersionEvalMetrics> {
   let correctIntent = 0;
   let correctRisk = 0;
+  let correctArea = 0;
   let correctRouting = 0;
-  let passedContent = 0;
+  let passedSafety = 0;
+  let passedCompleteness = 0;
   let incorporatedFeedback = 0;
   let totalLatency = 0;
 
@@ -147,17 +176,22 @@ async function evaluateVersion(
     const latency = performance.now() - t0;
     totalLatency += latency;
 
-    // 1. Check Intent Accuracy
+    // 1. Intent Accuracy
     if (result.classification.kind.intent === tc.expectedIntent) {
       correctIntent++;
     }
 
-    // 2. Check Risk Level Accuracy
+    // 2. Risk Level Accuracy
     if (result.classification.kind.riskLevel === tc.expectedRiskLevel) {
       correctRisk++;
     }
 
-    // 3. Check Policy Routing Compliance:
+    // 3. Product Area Accuracy (orthogonal dimension of kind tuple)
+    if (result.classification.kind.productArea === tc.expectedProductArea) {
+      correctArea++;
+    }
+
+    // 4. Policy Routing Compliance:
     // If expectedRequiresHumanReview === true: draft MUST NOT be autoSendEligible and MUST route to queue.
     // If expectedRequiresHumanReview === false: draft MUST be autoSendEligible and safely held pending 20 streak.
     const routingCompliant = tc.expectedRequiresHumanReview
@@ -167,14 +201,20 @@ async function evaluateVersion(
       correctRouting++;
     }
 
-    // 4. Check Content Guardrails & Safety Rules
+    // 5. Content Safety (mustNotInclude forbidden strings check)
     const body = result.draft.body.toLowerCase();
     const excludesAll = tc.mustNotInclude.every((exc) => !body.includes(exc.toLowerCase()));
     if (excludesAll) {
-      passedContent++;
+      passedSafety++;
     }
 
-    // 5. Measure Feedback Guidance Incorporation:
+    // 6. Content Completeness (mustInclude required keywords check)
+    const includesAll = tc.mustInclude.every((inc) => body.includes(inc.toLowerCase()));
+    if (includesAll) {
+      passedCompleteness++;
+    }
+
+    // 7. Measure Feedback Guidance Incorporation:
     // When feedback exists for this kind, did prompt v2 incorporate the reviewer-taught closing guidance?
     if (version === "v2_feedback_enhanced") {
       const hasFeedbackForKind = SYNTHETIC_TRAINING_EXEMPLARS.some(
@@ -200,8 +240,10 @@ async function evaluateVersion(
     totalCases: total,
     intentAccuracy: correctIntent / total,
     riskAccuracy: correctRisk / total,
+    areaAccuracy: correctArea / total,
     routingAccuracy: correctRouting / total,
-    contentRulePassRate: passedContent / total,
+    contentSafetyPassRate: passedSafety / total,
+    contentCompletenessRate: passedCompleteness / total,
     feedbackIncorporationRate: kindsWithFeedback > 0 ? incorporatedFeedback / kindsWithFeedback : 0,
     averageLatencyMs: totalLatency / total
   };

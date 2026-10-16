@@ -60,15 +60,12 @@ export class AutonomyEngine {
 
   /**
    * Autonomy gating rule:
-   * 1. Must be LOW risk.
+   * 1. Must be strictly LOW risk.
    * 2. Product area UNKNOWN must NEVER unlock autonomy.
    * 3. Autonomy must be enabled and backed by at least 20 consecutive unchanged human approvals.
    */
   public canAutoSend(kind: KindTuple): boolean {
-    if (kind.riskLevel !== RiskLevel.LOW) {
-      return false;
-    }
-    if (kind.productArea === ProductArea.UNKNOWN) {
+    if (kind.riskLevel !== RiskLevel.LOW || kind.productArea === ProductArea.UNKNOWN) {
       return false;
     }
     const state = this.getState(kind.key);
@@ -77,23 +74,32 @@ export class AutonomyEngine {
 
   /**
    * Records a HUMAN review action.
-   * Only human approvals can increment the 20-approval streak.
+   * Autonomy can ONLY enter autonomyEnabled=true when:
+   * - kind risk level is strictly LOW
+   * - kind product area is NOT UNKNOWN
+   * - 20 consecutive unchanged approvals have occurred
+   * MEDIUM, HIGH, and CRITICAL kinds must NEVER enter an enabled autonomy state.
    */
   public recordHumanReview(review: HumanReviewRecord): AutonomyState {
     const state = this.getState(review.kindKey);
     state.totalDrafts += 1;
     state.updatedAt = new Date().toISOString();
 
-    const isUnknownProductArea = review.kindKey.endsWith(`:${ProductArea.UNKNOWN}`);
+    const parts = review.kindKey.split(":");
+    const riskLevel = parts[1];
+    const productArea = parts[2];
+    const isEligibleForAutonomy = riskLevel === RiskLevel.LOW && productArea !== ProductArea.UNKNOWN;
 
     if (review.action === "APPROVE" && review.wasUnchanged) {
       state.unchangedStreak += 1;
       state.totalSentWithoutChanges += 1;
 
-      // UNKNOWN product area must never unlock autonomy
-      if (state.unchangedStreak >= 20 && !isUnknownProductArea) {
+      // Autonomy only enables if strictly LOW risk and product area is NOT UNKNOWN
+      if (state.unchangedStreak >= 20 && isEligibleForAutonomy) {
         state.autonomyEnabled = true;
         state.lastFailureReason = undefined;
+      } else {
+        state.autonomyEnabled = false;
       }
     } else {
       const previousAutonomy = state.autonomyEnabled;
@@ -115,14 +121,13 @@ export class AutonomyEngine {
     return { ...state };
   }
 
-  // Alias for backward compatibility in tests
   public recordReview(review: HumanReviewRecord): AutonomyState {
     return this.recordHumanReview(review);
   }
 
   /**
    * Records an AUTOMATIC delivery.
-   * CRITICAL: An automatic send NEVER counts as a human approval and does NOT increase unchanged streak.
+   * An automatic send NEVER counts as a human approval and does NOT increase unchanged streak.
    */
   public recordAutoDelivery(delivery: AutomaticDeliveryRecord): AutonomyState {
     const state = this.getState(delivery.kindKey);

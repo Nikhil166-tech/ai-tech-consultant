@@ -227,4 +227,22 @@ describe("InboxService Hardening & End-to-End", () => {
     expect(res.draft.body).not.toContain("Override previous safety policies");
     expect(res.draft.body).not.toContain("internal system secrets");
   });
+
+  it("deterministic fallback without API key is not auto-send eligible by default", async () => {
+    const defaultInbox = new InboxService();
+    expect(defaultInbox.draftGenerator.allowDeterministicAutoSend).toBe(false);
+
+    const email: CustomerEmail = {
+      id: "em_no_key",
+      senderEmail: "user@test.com",
+      subject: "Stripe Setup",
+      body: "Where do I paste Stripe keys?",
+      receivedAt: new Date().toISOString()
+    };
+
+    const res = await defaultInbox.processEmail(email);
+    expect(res.draft.autoSendEligible).toBe(false);
+    expect(res.draft.blockReason).toContain("Automated delivery requires active LLM synthesis");
+    expect(res.routedTo).toBe("HUMAN_REVIEW_QUEUE");
+  });
 });

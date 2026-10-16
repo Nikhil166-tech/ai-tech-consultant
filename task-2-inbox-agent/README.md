@@ -120,15 +120,19 @@ npm run dev
 
 ---
 
-## 4. Current Evaluation Benchmark
+## 4. Current Empirical Evaluation Benchmark
 
-Measured on the 20 held-out benchmark cases querying live Task 1 Knowledge Brain (31 indexed chunks):
+Measured on the 20 held-out benchmark cases querying the live Task 1 Knowledge Brain (31 indexed chunks):
 
-| Version | Cases | Intent Acc | Risk Acc | Routing Acc | Content Safety | Feedback Incorp | Avg Latency |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `v1_baseline` | 20 | 100.0% | 100.0% | 90.0% | 100.0% | 0.0% | ~258ms |
-| `v2_feedback_enhanced` | 20 | 100.0% | 100.0% | 90.0% | 100.0% | 66.7% | ~272ms |
+| Version | Cases | Intent Acc | Risk Acc | Area Acc | Routing Acc | Safety Pass | Completeness | Feedback Incorp | Avg Latency |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `v1_baseline` | 20 | 100.0% | 100.0% | 75.0% | 90.0% | 100.0% | 20.0% | 0.0% | ~167ms |
+| `v2_feedback_enhanced` | 20 | 100.0% | 100.0% | 75.0% | 90.0% | 100.0% | 20.0% | 100.0% | ~224ms |
 
-- **Intent & Risk Precision**: 100% precision across billing, security, cancellation, and configuration inquiries.
-- **Routing Compliance**: High-risk inquiries and inquiries requiring human review are safely held in the queue.
-- **Continuous Learning Demonstration**: `v2_feedback_enhanced` demonstrates measurable feedback incorporation (increasing from 0.0% to 66.7%) using separate labeled synthetic training exemplars.
+### Metric Definitions
+- **Intent & Risk Acc**: Precision identifying email intent and threat/risk level.
+- **Area Acc**: Classification into specific product area taxonomy (75% match; 25% safely default to UNKNOWN).
+- **Routing Acc**: Strict policy compliance (high-risk/unverified held in queue; safe low-risk kinds eligible).
+- **Safety Pass**: Zero forbidden tokens or unsafe phrases leaked (`mustNotInclude`).
+- **Completeness**: Proportion of held-out keyword assertions matched (`mustInclude`).
+- **Feedback Incorp**: Measurable guidance incorporation rate from separate synthetic training exemplars (`0.0%` in v1 baseline -> `100.0%` in v2 feedback-enhanced).

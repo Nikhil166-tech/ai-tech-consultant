@@ -11,17 +11,21 @@ export interface DraftGeneratorOptions {
   apiKey?: string;
   model?: string;
   feedbackStore?: FeedbackStore;
+  allowDeterministicAutoSend?: boolean;
 }
 
 export class DraftGenerator {
-  private readonly apiKey?: string;
+  public readonly apiKey?: string;
   private readonly model: string;
   private readonly feedbackStore: FeedbackStore;
+  public readonly allowDeterministicAutoSend: boolean;
 
   constructor(options: DraftGeneratorOptions = {}) {
     this.apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
     this.model = options.model || process.env.ANTHROPIC_MODEL_TEXT || "claude-haiku-5-5";
     this.feedbackStore = options.feedbackStore || new FeedbackStore();
+    this.allowDeterministicAutoSend =
+      options.allowDeterministicAutoSend ?? (process.env.ALLOW_DETERMINISTIC_AUTO_SEND === "true");
   }
 
   public async generateDraft(
@@ -46,6 +50,12 @@ export class DraftGenerator {
         : "Human specialist review flagged as required";
     }
 
+    // Safe default: if API key is absent, deterministic fallback may draft but cannot auto-send
+    if (!this.apiKey && !this.allowDeterministicAutoSend && autoSendEligible) {
+      autoSendEligible = false;
+      blockReason = "Automated delivery requires active LLM synthesis (deterministic fallback requires human review)";
+    }
+
     let bodyText = "";
     let modelFailed = false;
 
@@ -59,7 +69,7 @@ export class DraftGenerator {
       }
     }
 
-    // If model failed, a model-generation failure must force human review
+    // If model synthesis failed, force human review
     if (modelFailed) {
       autoSendEligible = false;
       blockReason = "Drafting model synthesis failed; routed to human review";
@@ -143,10 +153,18 @@ export class DraftGenerator {
 
     // 2. Insufficient Verified Knowledge
     if (!knowledge || !knowledge.is_known || knowledge.evidence_status === "INSUFFICIENT" || knowledge.evidence_status === "NONE") {
+      let feedbackNote = "";
+      if (version === "v2_feedback_enhanced") {
+        const pastCorrections = this.feedbackStore.getEditedCorrections(classification.kind.key, 1);
+        if (pastCorrections.length > 0) {
+          feedbackNote = "\n\nNote: A ticket has been prioritized for our specialist team to confirm the exact procedure.";
+        }
+      }
       return (
         `${header}\n\n` +
         `Thank you for asking about '${email.subject}'. We do not currently have sufficient verified documentation ` +
         `for this specific scenario. This requires human review, and our team will follow up as soon as the procedure is clarified.` +
+        feedbackNote +
         signoff
       );
     }
@@ -166,8 +184,9 @@ export class DraftGenerator {
     // Version 2 incorporates reviewer feedback guidance
     let feedbackAddendum = "";
     if (version === "v2_feedback_enhanced") {
-      const exemplars = this.feedbackStore.getApprovedExemplars(classification.kind.key, 1);
-      if (exemplars.length > 0 && exemplars[0].finalSentReply) {
+      const approved = this.feedbackStore.getApprovedExemplars(classification.kind.key, 1);
+      const corrections = this.feedbackStore.getEditedCorrections(classification.kind.key, 1);
+      if (approved.length > 0 || corrections.length > 0) {
         feedbackAddendum = "\n\nPlease let us know if you have any questions while testing these settings.";
       }
     }
