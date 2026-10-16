@@ -14,7 +14,7 @@ Our evaluation framework is strictly separated into four distinct verification l
 3. **20-Case Development Evaluation Suites**: In-depth benchmark scenarios used to test and refine the systems during development:
    - **Task 2**: 20-case development evaluation suite (`T2-EVAL-01` to `T2-EVAL-20`) measuring intent, risk, product area, safety guardrails, completeness, and feedback incorporation between `v1_baseline` and `v2_feedback_enhanced`.
    - **Task 3**: 20-case development evaluation suite (`T3-EVAL-01` to `T3-EVAL-20`), including complex transcripts, follow-up budget/deadline changes, contradictory requirements, and 3,800-character noisy transcripts (`VERY_LONG_TRANSCRIPT`).
-   - *Note on Evaluation Data Transparency*: These 20-case development evaluation suites were inspected and refined during iterative development to diagnose edge cases; they are not claimed to be blind unseen data. External evaluator hidden test cases remain genuinely unseen.
+   - *Note on Evaluation Data Transparency*: These 20-case development evaluation suites were inspected and refined during iterative development to diagnose edge cases; they are development evaluation suites and are not claimed to be held-out validation data.
 4. **Model & Configuration Comparisons**: Direct measurements comparing zero-shot baselines against human feedback learning.
 
 ---
@@ -28,7 +28,7 @@ Our evaluation framework is strictly separated into four distinct verification l
   - API contract validation (`/api/v1/ask`, `/health`, `/api/v1/sync`)
   - FastEmbed semantic vector indexing (`BAAI/bge-small-en-v1.5`, 384 dimensions)
   - Multimodal DOM hierarchy and UI screenshot analysis
-  - Calibrated evidence scoring (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`)
+  - Heuristic evidence scoring (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`)
   - Sitemap deletion safety on partial HTTP fetch failures
   - Dimension mismatch automatic database regeneration
   - SQLite FTS5 hybrid keyword/vector fallback
@@ -41,7 +41,7 @@ Our evaluation framework is strictly separated into four distinct verification l
 - **Development Evaluation Command**: `cd task-2-inbox-agent && npm run eval`
   - **Evaluation Suite**: 20-case development evaluation suite evaluated on both `v1_baseline` (zero few-shot exemplars) and `v2_feedback_enhanced` (in-context human review learning).
 
-#### Actual Empirical Task 2 Benchmark Results:
+#### Actual Empirical Task 2 Development Evaluation Results:
 | Metric | Prompt v1 (Baseline) | Prompt v2 (Feedback-Enhanced) | Change / Impact |
 | :--- | :---: | :---: | :--- |
 | **Total Test Cases** | 20 | 20 | Identical development set |
@@ -56,16 +56,16 @@ Our evaluation framework is strictly separated into four distinct verification l
 
 ### 2.3 Task 3: Meeting-to-Scope Pipeline
 - **Test Command**: `cd task-3-meeting-sow && pytest -q`
-  - **Result**: **21 passed in 74.27s**
+  - **Result**: **26 passed in 30.27s**
 - **Development Evaluation Command**: `cd task-3-meeting-sow && python -m evals.eval_runner`
   - **Evaluation Suite**: 20-case development evaluation suite, including follow-up meetings, scope creep detection, and failure modes.
 
-#### Actual Empirical Task 3 Benchmark Results:
+#### Actual Empirical Task 3 Development Evaluation Results:
 ```
 =========================================================================================================
                                ACTUAL EMPIRICAL TASK 3 EVALUATION RESULTS                                
 =========================================================================================================
-Total Benchmark Cases: 20
+Total Cases: 20
 - Requirement Extraction Quality:   100.0% (20/20)
 - Native vs Custom Decision Acc:    100.0% (20/20)
 - Scope Change-Diff Accuracy:       100.0% (4/4)
@@ -78,7 +78,7 @@ Total Benchmark Cases: 20
 
 ### 2.4 Root Integration Smoke Tests
 - **Test Command**: `pytest tests/test_integration_smoke.py -v`
-- **Result**: **6 passed in 11.21s**
+- **Result**: **6 passed in 3.41s**
   - `test_task1_health`: PASSED (Verified `/health` reporting healthy status, DB connectivity, and embedding provider).
   - `test_task3_can_call_task1`: PASSED (Verified Task 3 queries Task 1 over HTTP and processes citations).
   - `test_task2_can_call_task1_and_insufficient_knowledge_propagates_to_hitl`: PASSED (Verified Task 2 calls Task 1, insufficient knowledge forces `HUMAN_REVIEW_QUEUE`, `autoSendEligible=false`).
@@ -106,10 +106,9 @@ Total Benchmark Cases: 20
    - Task 2 (`task2-inbox-agent`) started successfully on port 3000.
    - Task 3 (`task3-meeting-sow`) started successfully on port 8002.
    - `/health` returned healthy for all three services.
-2. **Task 1 Corpus Boundary Constraints**:
+2. **Task 1 Corpus Boundary Constraints & Heuristic Scoring Limitations**:
    - The Task 1 SQLite database performs a bounded bootstrap of up to 25 sitemap pages (indexing 25 articles and 31 chunks) from the official Brilliant Directories Solution Center.
-   - When customer inquiries or meeting transcripts reference features outside these 25 articles (such as external third-party CRM tools, HubSpot, or custom webhook bridges), Task 1 correctly returns `is_known=False` / `evidence_status="NONE"`.
-   - In Task 2, this causes `mustInclude` completeness to report 20.0% because the agent safely refuses to hallucinate platform facts not present in the indexed corpus. This is an intentional safety behavior, not a regression.
-   - In Task 3, it correctly marks those capabilities as `UNKNOWN`, protecting clients from speculative scoping.
-3. **Local Test Latency**:
-   - Generating FastEmbed vectors locally on CPU during initial cold starts adds 1–2 seconds of latency on the first query; subsequent cached queries execute in <50ms.
+   - The bounded 25-page bootstrap can retrieve semantically related Developer Hub/API material for unsupported third-party integrations. Therefore, partial evidence can sometimes be classified as known by the current heuristic threshold (for example, an actual observed run returned `evidence_score = 0.609`, `evidence_status = PARTIAL`, `is_known = true` for an external HubSpot CRM query).
+   - This is a known limitation of the current uncalibrated heuristic evidence classifier.
+   - Task 3 adds its own capability-checking logic and can still classify unsupported CRM work as UNKNOWN or CUSTOM depending on the available Task 1 evidence, preventing speculative native scoping.
+   - In Task 2, `mustInclude` completeness reports 20.0% on the development evaluation suite because the agent safely refuses to hallucinate platform facts not present in the indexed corpus.

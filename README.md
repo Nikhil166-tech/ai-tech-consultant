@@ -15,7 +15,7 @@ graph TD
     B -- "/api/v1/ask" --> D["Task 3: Meeting-to-Scope (Port 8002)"]
 ```
 
-1. **Task 1: Knowledge Brain (Python/FastAPI)**: Crawls Brilliant Directories support documentation, extracts DOM hierarchies and screenshots, indexes chunks with `fastembed` (`BAAI/bge-small-en-v1.5`), and serves citation-grounded RAG answers with calibrated evidence scores (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`). Performs a bounded bootstrap of up to 25 sitemap pages on clean deployment.
+1. **Task 1: Knowledge Brain (Python/FastAPI)**: Crawls Brilliant Directories support documentation, extracts DOM hierarchies and screenshots, indexes chunks with `fastembed` (`BAAI/bge-small-en-v1.5`), and serves citation-grounded RAG answers with heuristic evidence scoring (`STRONG`, `PARTIAL`, `INSUFFICIENT`, `NONE`). Performs a bounded bootstrap of up to 25 sitemap pages on clean deployment.
 2. **Task 2: Inbox Agent (TypeScript/Express)**: Classifies client inquiries by risk, intent, and product area. Generates grounded email drafts. Enforces a strict 20-consecutive-approval autonomy gate for LOW-risk kinds while routing high-risk or low-confidence drafts to a browser-based HITL review portal.
 3. **Task 3: Meeting-to-Scope (Python/FastAPI)**: Multi-agent pipeline (Requirements Analyst -> Capability Checker -> Estimator -> SOW Writer) converting messy call transcripts into structured Statements of Work. Automatically diffs follow-up transcripts, flags scope creep, computes custom vs. discovery hours, and enforces mandatory human approval before marking proposals client-ready.
 
@@ -69,18 +69,18 @@ cd task-1-knowledge-brain && pytest -q
 # Task 2 Strict Typecheck & Unit Tests (23 passed in 5.68s)
 cd task-2-inbox-agent && npm run typecheck && npm test
 
-# Task 3 Multi-Agent Unit Tests (21 passed in 74.27s)
+# Task 3 Multi-Agent Unit Tests (26 passed in 30.27s)
 cd task-3-meeting-sow && pytest -q
 
-# Root Cross-Service Integration Smoke Tests (6 passed in 11.21s)
+# Root Cross-Service Integration Smoke Tests (6 passed in 3.41s)
 pytest tests/test_integration_smoke.py -v
 ```
 
-### Development Evaluation Benchmark Suites
+### Development Evaluation Suites
 ```bash
-# Task 2 Development Benchmark (20 cases: v1 baseline vs v2 feedback-enhanced)
+# Task 2 Development Evaluation Suite (20 cases: v1 baseline vs v2 feedback-enhanced)
 cd task-2-inbox-agent && npm run eval
 
-# Task 3 Development Benchmark (20 multi-turn requirement scoping cases)
+# Task 3 Development Evaluation Suite (20 multi-turn requirement scoping cases)
 cd task-3-meeting-sow && python -m evals.eval_runner
 ```
