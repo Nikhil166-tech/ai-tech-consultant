@@ -3,6 +3,7 @@ services:
     build:
       context: ./task-1-knowledge-brain
       dockerfile: Dockerfile
+    image: ai-tech-consultant-task1:latest
     container_name: task1-knowledge-brain
     ports:
       - "8000:8000"
@@ -23,9 +24,7 @@ services:
       start_period: 10s
 
   task1-bootstrap:
-    build:
-      context: ./task-1-knowledge-brain
-      dockerfile: Dockerfile
+    image: ai-tech-consultant-task1:latest
     container_name: task1-bootstrap
     depends_on:
       task1:
