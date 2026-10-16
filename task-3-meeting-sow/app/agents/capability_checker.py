@@ -35,8 +35,27 @@ class ProductCapabilityCheckerAgent:
         self.model = os.getenv("ANTHROPIC_MODEL_TEXT") or model
 
     async def evaluate_requirement(self, requirement: RequirementItem) -> RequirementItem:
-        query = requirement.title
-        result = await self.task1_client.query_capability(query)
+        # Query Task 1 using requirement title first (canonical feature term)
+        result = await self.task1_client.query_capability(requirement.title)
+        
+        stopwords = {
+            "custom", "automated", "member", "to", "for", "and", "the", "integration",
+            "processing", "prevention", "widget", "support", "feature", "search",
+            "directory", "directories", "general", "overview", "with", "into", "all",
+            "records", "push", "via", "new", "site", "website", "portal", "card",
+            "cards", "profile", "profiles", "page", "pages", "homepage", "bar", "modal", "modals"
+        }
+        topic_words = (set(requirement.title.lower().split()) | set(requirement.description.lower().split())) - stopwords
+        topic_words = {w.strip(".,;:()") for w in topic_words if len(w.strip(".,;:()")) >= 3}
+        
+        cits_text = (" ".join([c.snippet for c in result.response.citations]) + " " + result.response.answer).lower() if result.response and result.response.citations else ""
+        has_words = any(re.search(rf"\b{re.escape(w)}\b", cits_text) or (w.endswith("s") and re.search(rf"\b{re.escape(w[:-1])}\b", cits_text)) for w in topic_words)
+        
+        # If title query didn't retrieve topic words, fallback to full details query
+        if not has_words or not result.response or not result.response.citations:
+            full_res = await self.task1_client.query_capability(f"{requirement.title}: {requirement.description}")
+            if full_res.success and full_res.response and full_res.response.citations:
+                result = full_res
 
         # 1. If Task 1 is unavailable, timed out, or had insufficient evidence
         if not result.success or not result.response or not result.response.is_known:
@@ -148,60 +167,84 @@ class ProductCapabilityCheckerAgent:
         evidence = f"{ans_lower} {snippets_lower}"
         req_text = f"{requirement.title} {requirement.description}".lower()
 
-        # Check if evidence mentions lack of documentation or uncertainty
-        if any(u in ans_lower for u in ("insufficient", "don't have enough", "not documented", "cannot verify")):
+        # 1. Uncertainty check: if evidence says insufficient or cannot verify, return UNKNOWN
+        if any(u in ans_lower for u in ("insufficient", "don't have enough", "not documented", "cannot verify", "is ambiguous")):
             return ClaudeCapabilityDecision(
                 status=CapabilityStatus.UNKNOWN,
-                notes="Task 1 documentation is insufficient or ambiguous. Assigned as UNKNOWN feasibility spike."
+                notes="Task 1 documentation is insufficient or ambiguous. Assigned as UNKNOWN feasibility discovery spike."
             )
 
-        # Check for explicitly requested custom external integrations or mobile containers
-        if any(k in req_text for k in ("crm", "hubspot", "salesforce", "mobile app", "react native", "ios app", "webhook bridge", "external api", "accounting erp")):
+        if not citations:
             return ClaudeCapabilityDecision(
-                status=CapabilityStatus.CUSTOM,
-                notes="Requires external software integration or custom API bridge outside native platform settings."
+                status=CapabilityStatus.UNKNOWN,
+                notes="No documentation citations found in Task 1 Knowledge Brain. Preserved as UNKNOWN."
             )
 
-        # Extract distinctive keywords for this requirement (excluding common stopwords and generic directory terms)
-        title_words = set(re.findall(r"\w+", requirement.title.lower())) - {
+        # 2. Extract distinctive topic words from requirement (excluding common grammatical/directory stopwords)
+        stopwords = {
             "custom", "automated", "member", "to", "for", "and", "the", "integration",
             "processing", "prevention", "widget", "support", "feature", "search",
-            "directory", "directories", "general", "overview"
+            "directory", "directories", "general", "overview", "with", "into", "all",
+            "records", "push", "via", "new", "site", "website", "portal", "card",
+            "cards", "profile", "profiles", "page", "pages", "homepage", "bar", "modal", "modals"
         }
+        topic_words = (set(re.findall(r"\w+", requirement.title.lower())) | set(re.findall(r"\w+", requirement.description.lower()))) - stopwords
+        topic_words = {w for w in topic_words if len(w) >= 3}
 
-        # Check if the evidence actually documents the specific feature requested using word boundaries
         evidence_mentions_feature = any(
             (re.search(rf"\b{re.escape(w)}\b", evidence) or (w.endswith("s") and re.search(rf"\b{re.escape(w[:-1])}\b", evidence)))
-            for w in title_words if len(w) >= 3
+            for w in topic_words
         )
 
-        # Known native setting sections in Brilliant Directories documentation
-        has_native_docs = any(
-            n in evidence
-            for n in (
-                "payment gateway", "finance", "billing", "subscription",
-                "location settings", "search radius", "radius", "maps",
-                "email templates", "welcome email",
-                "google recaptcha", "recaptcha",
-                "export member data", "export",
-                "claim listings", "claimable",
-                "member badges", "badges",
-                "out-of-the-box", "out of the box", "built-in", "standard setting", "admin portal"
+        # Generic terminology in Task 1 evidence indicating developer endpoints / custom dev
+        has_custom_dev_evidence = any(
+            cd in evidence
+            for cd in (
+                "developer hub", "api endpoints", "api documentation", "custom webhook", "create a custom webhook",
+                "api calls", "custom plugin", "custom coding", "unsupported natively", "not supported natively",
+                "not available natively", "requires custom development", "requires custom api", "custom code required",
+                "developer required", "external integration required", "third-party api", "get members through the api"
             )
         )
 
-        if evidence_mentions_feature and has_native_docs:
-            needs_custom_extension = any(
-                ce in req_text
-                for ce in (
-                    "custom css",
-                    "custom animation",
-                    "custom styling",
-                    "plus custom",
-                    "with custom",
-                )
+        # Generic terminology in Task 1 evidence indicating built-in or native admin settings
+        has_native_admin_evidence = any(
+            na in evidence
+            for na in (
+                "built-in", "built in", "native", "natively", "out-of-the-box", "out of the box",
+                "standard setting", "standard settings", "admin portal", "admin area", "admin dashboard",
+                "general settings", "design settings", "finance settings", "turn on", "enable",
+                "standard configuration", "default feature", "included with",
+                "section: finance", "section: my members", "section: interactions", "section: my content",
+                "section: emails", "add-on", "overview"
+            )
+        )
+
+        needs_custom_extension = any(
+            ce in req_text
+            for ce in (
+                "custom css", "custom animation", "custom styling", "plus custom", "with custom",
+                "custom layout", "custom widget"
+            )
+        )
+
+        # Decision based strictly on Task 1 evidence:
+        # If evidence doesn't even mention the topic words, preserve uncertainty as UNKNOWN
+        if not evidence_mentions_feature:
+            return ClaudeCapabilityDecision(
+                status=CapabilityStatus.UNKNOWN,
+                notes="Task 1 evidence does not document the specific feature requested. Assigned as UNKNOWN."
             )
 
+        # Explicit custom development / Developer Hub evidence
+        if has_custom_dev_evidence and any(k in req_text for k in ("integration", "wrapper", "bridge", "api", "webhook", "external", "sync")):
+            return ClaudeCapabilityDecision(
+                status=CapabilityStatus.CUSTOM,
+                notes="Task 1 evidence indicates external developer API endpoints, Developer Hub, or custom webhooks are required."
+            )
+
+        # Explicit native admin setting evidence
+        if has_native_admin_evidence:
             if needs_custom_extension:
                 return ClaudeCapabilityDecision(
                     status=CapabilityStatus.PARTIAL,
@@ -215,10 +258,10 @@ class ProductCapabilityCheckerAgent:
                 notes=f"Natively supported out-of-the-box in Brilliant Directories via {loc}. Standard admin configuration only ($0 custom development hours)."
             )
 
-        # If evidence does not clearly confirm the feature, preserve uncertainty as UNKNOWN
+        # Otherwise: unverified / ambiguous
         return ClaudeCapabilityDecision(
             status=CapabilityStatus.UNKNOWN,
-            notes="Task 1 evidence does not clearly establish native availability for this requirement. Assigned as UNKNOWN."
+            notes="Task 1 evidence does not explicitly confirm native admin configuration nor verified custom dev path. Preserved as UNKNOWN."
         )
 
     async def evaluate_all(self, requirements: list[RequirementItem]) -> list[RequirementItem]:

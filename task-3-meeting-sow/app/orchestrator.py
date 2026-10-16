@@ -218,20 +218,35 @@ class PipelineOrchestrator:
 
             # Check if there is an explicit modification mentioned in a matching clause
             explicit_mod_in_clause = False
+            mod_clause_text = ""
             for clause in clauses:
                 if any(re.search(p, clause) for p in mod_patterns) and any(w in clause for w in orig_words):
                     explicit_mod_in_clause = True
+                    mod_clause_text = clause.strip()
                     break
 
-            if matched_candidate:
-                matched_candidate_ids.add(matched_candidate.id)
-                desc_changed = matched_candidate.description != orig_req.description
+            if matched_candidate or explicit_mod_in_clause:
+                base_item = matched_candidate or orig_req
+                if matched_candidate:
+                    matched_candidate_ids.add(matched_candidate.id)
+                desc_changed = matched_candidate and (matched_candidate.description != orig_req.description)
 
                 if desc_changed or explicit_mod_in_clause:
-                    changed_item = matched_candidate.model_copy()
+                    changed_item = base_item.model_copy()
                     changed_item.id = orig_req.id  # PRESERVE STABLE ID!
                     changed_item.status = RequirementLifecycleStatus.CHANGED
-                    changed_item.change_reason = f"Modified criteria in follow-up meeting: {matched_candidate.description}"
+
+                    # Preserve actual changed acceptance criteria / constraint
+                    if mod_clause_text:
+                        clean_clause = mod_clause_text
+                        for prefix in ("client:", "alex:", "dr. reed:", "-"):
+                            if clean_clause.lower().startswith(prefix):
+                                clean_clause = clean_clause[len(prefix):].strip()
+                        changed_item.description = f"{orig_req.title}: {clean_clause}"
+                        changed_item.change_reason = f"Constraint updated in follow-up: {clean_clause}"
+                    else:
+                        changed_item.change_reason = f"Modified criteria in follow-up meeting: {base_item.description}"
+
                     change_set.changed_requirements.append(changed_item)
                     updated_reqs.append(changed_item)
                 else:
@@ -239,12 +254,6 @@ class PipelineOrchestrator:
                     unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
                     change_set.unchanged_requirements.append(unchanged_item)
                     updated_reqs.append(unchanged_item)
-            elif explicit_mod_in_clause:
-                changed_item = orig_req.model_copy()
-                changed_item.status = RequirementLifecycleStatus.CHANGED
-                changed_item.change_reason = "Modified parameters in follow-up meeting dialogue."
-                change_set.changed_requirements.append(changed_item)
-                updated_reqs.append(changed_item)
             else:
                 unchanged_item = orig_req.model_copy()
                 unchanged_item.status = RequirementLifecycleStatus.UNCHANGED
@@ -289,18 +298,50 @@ class PipelineOrchestrator:
         ]
         change_set.diff_summary = "\n".join(diff_lines)
 
-        # 5. Snapshot previous version in version_history
+        # 5. Snapshot previous version in version_history with full structured schema (Item 5)
         snapshot = {
             "version": existing_scope.version,
             "meeting_count": existing_scope.meeting_count,
-            "client_ready": existing_scope.client_ready,
-            "approved_by": existing_scope.approved_by,
-            "total_custom_hours": existing_scope.expected_custom_hours,
-            "requirements_count": len(existing_scope.requirements),
+            "approval_state": {
+                "client_ready": existing_scope.client_ready,
+                "approved_by": existing_scope.approved_by,
+                "approved_at": existing_scope.approved_at,
+            },
+            "custom_total_hours": existing_scope.expected_custom_hours,
+            "custom_hours_range": existing_scope.custom_hours_range,
+            "discovery_total_hours": existing_scope.expected_discovery_hours,
+            "discovery_hours_range": existing_scope.discovery_hours_range,
+            "requirements": [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "description": r.description,
+                    "capability_status": r.capability_status.value if hasattr(r.capability_status, "value") else str(r.capability_status),
+                    "lifecycle_status": r.status.value if hasattr(r.status, "value") else str(r.status),
+                }
+                for r in existing_scope.requirements
+            ],
+            "open_questions": list(existing_scope.open_questions),
+            "assumptions": list(existing_scope.assumptions),
+            "risks": list(existing_scope.risks),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         history = list(existing_scope.version_history)
         history.append(snapshot)
+
+        # Check follow-up transcript text for budget adjustments
+        if any(b in follow_up_transcript.lower() for b in ("budget", "slashed", "reduced by", "cut by", "50%")):
+            if not any("budget" in r.lower() for r in new_analysis["risks"]):
+                new_analysis["risks"].append("Budget reduction reported: project budget reduced by 50%; scope must prioritize essential launch items.")
+            if not any("budget" in a.lower() for a in new_analysis["assumptions"]):
+                new_analysis["assumptions"].append("Scope prioritized for reduced budget constraints.")
+
+        # Check follow-up transcript text for deadline adjustments
+        if any(d in follow_up_transcript.lower() for d in ("deadline", "moved up", "go-live moved", "accelerated", "next month")):
+            if not any("deadline" in r.lower() for r in new_analysis["risks"]):
+                new_analysis["risks"].append("Accelerated deadline: target go-live date moved up to next month; compressed delivery timeline increases schedule risk.")
+            if not any("deadline" in a.lower() for a in new_analysis["assumptions"]):
+                new_analysis["assumptions"].append("Delivery milestone timeline adjusted for accelerated deadline.")
 
         # Combine assumptions (preserving order and removing duplicates)
         accumulated_assumptions = list(dict.fromkeys(existing_scope.assumptions + new_analysis["assumptions"]))

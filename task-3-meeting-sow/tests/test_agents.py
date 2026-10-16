@@ -167,6 +167,45 @@ async def test_capability_checker_ambiguous_evidence_yields_unknown():
     assert evaluated.capability_status == CapabilityStatus.UNKNOWN
 
 
+@pytest.mark.asyncio
+async def test_capability_checker_external_sounding_name_with_ambiguous_evidence_yields_unknown():
+    """Item 1: Requirement name sounds like an external/custom integration,
+    but Task 1 evidence is ambiguous; result MUST be UNKNOWN, not CUSTOM."""
+    client = Task1MeetingClient()
+    checker = ProductCapabilityCheckerAgent(task1_client=client)
+
+    # Ambiguous overview citation that does NOT document the feature nor Developer Hub
+    task1_resp = Task1AskResponse(
+        answer="Based on Brilliant Directories 'What Do You Need Help With?' (Overview): Solutions home. Get Started Here.",
+        citations=[
+            Task1Citation(
+                url="https://support.brilliantdirectories.com/support/home",
+                title="What Do You Need Help With?",
+                category="General",
+                folder="Overview",
+                section_heading="Overview",
+                snippet="General overview of directory portal setup.",
+                source_type="article",
+            )
+        ],
+        is_known=True,
+        evidence_status="PARTIAL",
+    )
+
+    with patch.object(client, "query_capability", new_callable=AsyncMock) as mock_query:
+        mock_query.return_value = Task1ClientResult(success=True, is_available=True, response=task1_resp)
+        req = RequirementItem(
+            id="REQ-05",
+            title="Custom External CRM Integration",
+            description="Sync member records to external CRM platform",
+        )
+        evaluated = await checker.evaluate_requirement(req)
+
+    assert evaluated.capability_status == CapabilityStatus.UNKNOWN, (
+        f"Expected UNKNOWN for ambiguous evidence without verified documentation, but got {evaluated.capability_status}"
+    )
+
+
 def test_technical_estimator_hours_separation():
     estimator = TechnicalEstimatorAgent()
 

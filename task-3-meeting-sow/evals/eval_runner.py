@@ -77,6 +77,24 @@ async def run_task3_evaluations():
                 excludes_all = all(m.lower() not in " ".join([r.title.lower() for r in scope.requirements]) for m in tc.must_not_contain)
                 ext_ok = has_goal and has_reqs and contains_all and excludes_all
 
+            # --- Context Keyword Assertions (Changed Budget, Deadline, Contradictory) ---
+            if tc.expected_context_keywords:
+                all_context_pieces = list(scope.assumptions + scope.risks + scope.open_questions + scope.decisions)
+                for ch in scope.change_history:
+                    if hasattr(ch, "diff_summary"):
+                        all_context_pieces.append(ch.diff_summary)
+                if changes:
+                    all_context_pieces.append(changes.diff_summary)
+                    for r in changes.changed_requirements + changes.removed_requirements + changes.out_of_scope_requirements:
+                        if r.change_reason:
+                            all_context_pieces.append(r.change_reason)
+                        if r.description:
+                            all_context_pieces.append(r.description)
+                all_context_text = " ".join(all_context_pieces)
+                context_ok = any(kw.lower() in all_context_text.lower() for kw in tc.expected_context_keywords)
+                if not context_ok:
+                    ext_ok = False
+
             if ext_ok:
                 extraction_passes += 1
 

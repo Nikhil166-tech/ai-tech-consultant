@@ -128,3 +128,45 @@ async def test_context_and_open_questions_preserved_across_meetings():
 
     # Verify decisions history
     assert len(scope2.decisions) >= 2
+
+@pytest.mark.asyncio
+async def test_changed_acceptance_criteria_preserved_in_follow_up():
+    """Item 2 & 5: Verifies that follow-up changes to requirements (e.g. 'one-way only and new members')
+    are preserved in the updated requirement description and change metadata rather than
+    overwritten with generic boilerplate, and version_history preserves full schema."""
+    store = ProjectStore(filepath="data/test_changed_criteria.json")
+    orch = PipelineOrchestrator(store=store)
+
+    # Initial meeting
+    init_transcript = "Client: We need custom CRM integration to synchronize contacts to HubSpot."
+    scope1 = await orch.create_project_from_meeting(init_transcript, project_id="proj_criteria")
+    assert any("crm" in r.title.lower() for r in scope1.requirements)
+
+    # Follow-up with specific constraint modification
+    follow_up_transcript = "Client: CRM sync should now only send new members one-way."
+    scope2, change_set = await orch.process_follow_up("proj_criteria", follow_up_transcript)
+
+    crm_req = next(r for r in scope2.requirements if "crm" in r.title.lower())
+    assert crm_req.status == RequirementLifecycleStatus.CHANGED
+
+    # Must preserve actual changed acceptance criteria
+    combined_text = f"{crm_req.description} {crm_req.change_reason}".lower()
+    assert "one-way" in combined_text, f"Expected 'one-way' in updated requirement, got: {combined_text}"
+    assert "new members" in combined_text or "only send" in combined_text, (
+        f"Expected 'new members' constraint in updated requirement, got: {combined_text}"
+    )
+
+    # Verify version_history snapshot preserved all required fields (Item 5)
+    assert len(scope2.version_history) == 1
+    prior_snap = scope2.version_history[0]
+    assert "requirements" in prior_snap
+    assert len(prior_snap["requirements"]) > 0
+    assert prior_snap["requirements"][0]["id"] == "REQ-01"
+    assert "title" in prior_snap["requirements"][0]
+    assert "description" in prior_snap["requirements"][0]
+    assert "capability_status" in prior_snap["requirements"][0]
+    assert "open_questions" in prior_snap
+    assert "assumptions" in prior_snap
+    assert "custom_total_hours" in prior_snap
+    assert "discovery_total_hours" in prior_snap
+    assert "approval_state" in prior_snap

@@ -16,6 +16,7 @@ class Task3EvalCase(BaseModel):
     must_contain_in_scope: list[str] = Field(default_factory=list)
     must_not_contain: list[str] = Field(default_factory=list)
     simulate_task1_failure: str | None = None  # "TIMEOUT" | "MALFORMED" | "UNAVAILABLE"
+    expected_context_keywords: list[str] = Field(default_factory=list)
     description: str = ""
 
 
@@ -62,6 +63,7 @@ task3_eval_cases: list[Task3EvalCase] = [
         scenario_type="CONTRADICTORY_REQS",
         transcript="Client: We want all memberships completely free for life, but we also must charge recurring monthly subscription billing for access.",
         must_contain_in_scope=["Billing"],
+        expected_context_keywords=["free", "subscription", "recurring", "contradictory"],
         description="Verifies contradictory requirements recorded as open questions and assumptions."
     ),
     Task3EvalCase(
@@ -71,6 +73,7 @@ task3_eval_cases: list[Task3EvalCase] = [
         follow_up_transcript="Client: Our board slashed our budget by 50%. We must prioritize essential launch items only.",
         expected_has_custom_hours=True,
         must_contain_in_scope=["Stripe", "Mobile"],
+        expected_context_keywords=["budget", "prioritize"],
         description="Verifies budget adjustment properly flagged in project assumptions and questions."
     ),
     Task3EvalCase(
@@ -80,6 +83,7 @@ task3_eval_cases: list[Task3EvalCase] = [
         follow_up_transcript="Client: The CEO moved our go-live deadline up from October to next month.",
         expected_has_custom_hours=False,
         must_contain_in_scope=["Stripe", "Radius"],
+        expected_context_keywords=["deadline", "accelerated", "timeline"],
         description="Verifies deadline changes recorded in project risks and milestone schedule."
     ),
     Task3EvalCase(
@@ -118,14 +122,36 @@ task3_eval_cases: list[Task3EvalCase] = [
         id="T3-EVAL-11",
         scenario_type="VERY_LONG_TRANSCRIPT",
         transcript=(
-            "Alex: Welcome to our comprehensive planning call for North American Healthcare Directory.\n"
-            "Dr. Reed: Thank you. We have a detailed agenda.\n"
-            "First, provider billing must use Stripe payment processing with recurring monthly billing.\n"
-            "Second, patients must find doctors using location radius search within 25 miles.\n"
-            "Third, medical providers must display verified badges once their license is verified.\n"
-            "Fourth, all registration forms need reCAPTCHA bot spam prevention.\n"
-            "Fifth, automated welcome email templates must send immediately.\n"
-            "Sixth, we need data export to CSV for monthly audit reports."
+            "Alex: Good morning everyone, thank you for joining this comprehensive architecture and planning session "
+            "for the North American Healthcare and Medical Directory portal. We have a lot of stakeholders on the line today.\n"
+            "Dr. Reed: Good morning Alex, Dr. Miller and I are dialing in from Chicago. The weather here is freezing today, "
+            "and traffic coming into the hospital was pretty terrible, but we made it. How is the weather over on your end?\n"
+            "Alex: Pretty rainy here in Boston, but we have hot coffee and a full 90-minute block reserved so we can go through "
+            "the directory platform scope thoroughly. Let's make sure we hit every technical functional requirement before our next board meeting.\n"
+            "Dr. Miller: Sounds great. Before we dive into the functional features, I wanted to mention that our clinical committee "
+            "reviewed the color scheme mockup you shared yesterday. They love the navy blue headers, but they asked whether we can make "
+            "the font size slightly larger for older practitioners reading patient intake instructions. Just a small cosmetic note.\n"
+            "Alex: Noted, we will definitely tune typography in the portal theme settings. Let's move to our primary functional modules.\n"
+            "Dr. Reed: Perfect. First and most critically for our cash flow: provider billing must use Stripe payment processing "
+            "with recurring monthly billing so medical practices can subscribe to premium directory tiers seamlessly without manual invoicing.\n"
+            "Alex: Excellent, Stripe recurring subscriptions will handle credit card authorizations and automated monthly renewal cycles.\n"
+            "Dr. Miller: Right. Now, regarding how patients find doctors: our current hospital system has a huge problem with geographical matching. "
+            "Patients often drive 60 miles for a simple consultation because search results are sorted purely alphabetically. "
+            "We had a conference last month where the entire keynote was on reducing patient travel friction in rural areas. "
+            "Our second essential requirement is that patients must find doctors using location radius search within 25 miles of their zip code.\n"
+            "Dr. Reed: Exactly. And speaking of credentialing, there are so many unverified health coaches online right now that patient trust "
+            "is our highest priority. Third, medical providers must display verified badges on profile cards once their state medical license is verified.\n"
+            "Alex: Verified badges will give immediate visual credibility to qualified practitioners.\n"
+            "Dr. Miller: In terms of digital security, we were reading about bot attacks on another medical portal where spammers created ten thousand fake profiles overnight. "
+            "It crashed their database and their server hosting bill was astronomical. We cannot let that happen to our directory. "
+            "Fourth, all public registration forms and inquiry modals need Google reCAPTCHA bot spam prevention to block robotic submissions.\n"
+            "Dr. Reed: Yes, absolutely non-negotiable. Fifth, as soon as a doctor registers, automated welcome email templates must send immediately "
+            "with onboarding instructions and clinic verification steps so they don't have to wait for manual staff intervention.\n"
+            "Alex: That ensures immediate member engagement right after registration.\n"
+            "Dr. Miller: Lastly, for our monthly compliance audits with state healthcare authorities, our regulatory liaison requires raw tabular files. "
+            "Sixth, we need data export to CSV for monthly audit reports so our compliance department can download member rosters anytime.\n"
+            "Alex: Understood. That covers provider billing with Stripe recurring subscriptions, 25-mile location radius search, verified badges, "
+            "reCAPTCHA spam protection, automated welcome emails, and CSV data export. We will wrap all of these into our formal Statement of Work."
         ),
         expected_capabilities={
             "Stripe": CapabilityStatus.NATIVE,
@@ -136,8 +162,8 @@ task3_eval_cases: list[Task3EvalCase] = [
             "Export": CapabilityStatus.NATIVE,
         },
         expected_has_custom_hours=False,
-        must_contain_in_scope=["Stripe", "Radius", "Badge"],
-        description="Verifies extraction and native classification on long, multi-topic agenda."
+        must_contain_in_scope=["Stripe", "Radius", "Badge", "reCAPTCHA", "Welcome Email", "Export"],
+        description="Verifies extraction and native classification on long, multi-thousand-character transcript with realistic dialogue."
     ),
     Task3EvalCase(
         id="T3-EVAL-12",

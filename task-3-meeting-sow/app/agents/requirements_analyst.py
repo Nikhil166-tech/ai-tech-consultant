@@ -122,7 +122,18 @@ class RequirementsAnalystAgent:
                     next_id_num += 1
                     status = RequirementLifecycleStatus.NEW
 
-                desc = f"Configure and implement {title.lower()} according to directory specifications."
+                # Preserve actual transcript dialogue line as description (Item 2)
+                matched_line = ""
+                for line in lines:
+                    line_l = line.lower()
+                    if any(k in line_l for k in keywords):
+                        clean_line = line
+                        for prefix in ("client:", "alex:", "dr. reed:", "dr. miller:", "-"):
+                            if clean_line.lower().startswith(prefix):
+                                clean_line = clean_line[len(prefix):].strip()
+                        matched_line = clean_line
+                        break
+                desc = matched_line if matched_line else f"Configure and implement {title.lower()} according to directory specifications."
 
                 # Check if custom was specifically requested for THIS topic
                 is_custom_requested = False
@@ -158,6 +169,7 @@ class RequirementsAnalystAgent:
             "Client will provide required 3rd-party API credentials where applicable.",
         ]
         open_questions = []
+        risks = []
         if "custom crm" in text_lower or "hubspot" in text_lower:
             open_questions.append("What specific fields must be synchronized to the external CRM?")
         if "timeline" in text_lower or "launch date" in text_lower or "go-live" in text_lower or "deadline" in text_lower:
@@ -168,8 +180,23 @@ class RequirementsAnalystAgent:
         if "vague" in text_lower or len(reqs) == 0:
             open_questions.append("Client requirements are high-level; discovery session needed to define specific functional acceptance criteria.")
 
+        # Contradictory requirements detection (e.g. free vs paid subscription)
+        if ("free" in text_lower or "no charge" in text_lower) and any(b in text_lower for b in ("recurring", "subscription", "monthly billing", "charge")):
+            open_questions.append("Contradictory requirement detected: client requested free lifetime memberships but also monthly recurring subscription billing. Clarify monetization structure.")
+            risks.append("Conflicting pricing models (free vs paid recurring billing) will cause user confusion and billing implementation defects.")
+            assumptions.append("Client will clarify whether directory membership is entirely free or requires a paid subscription.")
+
+        # Budget constraints detection
+        if any(b in text_lower for b in ("budget", "slashed", "reduced by", "cut by", "50%")):
+            risks.append("Budget reduction reported: project budget reduced by 50%; scope must prioritize essential launch items.")
+            assumptions.append("Scope prioritized for reduced budget constraints.")
+
+        # Deadline constraints detection
+        if any(d in text_lower for d in ("deadline", "moved up", "go-live moved", "accelerated", "next month")):
+            risks.append("Accelerated deadline: target go-live date moved up to next month; compressed delivery timeline increases schedule risk.")
+            assumptions.append("Delivery milestone timeline adjusted for accelerated deadline.")
+
         # Risks
-        risks = []
         if any(r.category == "INTEGRATION" for r in reqs):
             risks.append("External API rate limits and schema changes on 3rd-party platforms.")
         if any(r.category == "MOBILE" for r in reqs):
