@@ -1,4 +1,4 @@
-﻿import os
+import os
 import asyncio
 import logging
 from typing import List, Optional
@@ -84,8 +84,8 @@ def health_check():
     embedding provider status, daily sync configuration, and active models.
     """
     try:
-        active_articles = len(db.get_all_active_urls())
-        chunks_count = len(db.get_all_chunks())
+        active_articles = db.count_active_articles()
+        chunks_count = db.count_active_chunks()
         
         emb_status = rag_engine.retriever.embedder.get_status()
         

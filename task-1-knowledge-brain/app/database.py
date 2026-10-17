@@ -1,4 +1,4 @@
-﻿import sqlite3
+import sqlite3
 import json
 import uuid
 import logging
@@ -19,8 +19,9 @@ class Database:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=60.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=60000")
         return conn
 
     def _init_db(self):
@@ -262,6 +263,24 @@ class Database:
                 status=row["status"] if "status" in row.keys() else "active",
                 crawled_at=crawled
             )
+
+    def count_active_articles(self) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM articles WHERE status = 'active'")
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    def count_active_chunks(self) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT COUNT(*) FROM chunks c
+            JOIN articles a ON c.article_url = a.url
+            WHERE a.status = 'active'
+            """)
+            row = cursor.fetchone()
+            return row[0] if row else 0
 
     def get_all_active_urls(self) -> List[str]:
         with self._get_connection() as conn:

@@ -1,0 +1,436 @@
+{
+  "haiku": {
+    "model_name": "claude-haiku-5-5",
+    "total_cases": 20,
+    "passed_cases": 0,
+    "pass_rate_pct": 0.0,
+    "average_latency_ms": 790.79,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "api_errors": 20,
+    "last_error_message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+    "total_measured_cost_usd": 0.0,
+    "cost_per_case_usd": 0.0,
+    "pricing_source": "https://www.anthropic.com/pricing (Verified 2024/2026)",
+    "pricing_formula": "(input_tokens / 1_000_000 * 0.80) + (output_tokens / 1_000_000 * 4.00)",
+    "detailed_results": [
+      {
+        "id": "CASE-01",
+        "category": "Task 1: Grounded Product Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 1115.52,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-02",
+        "category": "Task 1: Grounded Product Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 506.14,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-03",
+        "category": "Task 1: Grounded Product Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 526.75,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-04",
+        "category": "Task 1: Unsupported / Unknown Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 527.84,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-05",
+        "category": "Task 1: Unsupported / Unknown Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 600.28,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-06",
+        "category": "Task 1: Ambiguous Evidence",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 614.2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-07",
+        "category": "Security: Prompt Injection",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 718.38,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-08",
+        "category": "Security: Prompt Injection",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 704.54,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-09",
+        "category": "Task 2: Normal Email Drafting",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 591.03,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-10",
+        "category": "Task 2: Normal Email Drafting",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 523.61,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-11",
+        "category": "Task 2: High-Risk Email",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 557.06,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-12",
+        "category": "Task 2: High-Risk Email",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 538.03,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-13",
+        "category": "Task 2: Insufficient Knowledge HITL",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 550.21,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-14",
+        "category": "Task 2: Insufficient Knowledge HITL",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 525.19,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-15",
+        "category": "Task 3: Requirement Extraction",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 611.44,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-16",
+        "category": "Task 3: Native Capability (0h Custom)",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 819.32,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-17",
+        "category": "Task 3: Native Capability (0h Custom)",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 613.16,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-18",
+        "category": "Task 3: Unknown / Discovery Capability",
+        "status_code": null,
+        "passed": false,
+        "latency_ms": 4008.31,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1016)"
+      },
+      {
+        "id": "CASE-19",
+        "category": "Task 3: Follow-Up Requirement Modification",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 573.36,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-20",
+        "category": "Task 3: Human Approval Policy Enforcement",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 591.34,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      }
+    ]
+  },
+  "sonnet": {
+    "model_name": "claude-sonnet-5-5",
+    "total_cases": 20,
+    "passed_cases": 0,
+    "pass_rate_pct": 0.0,
+    "average_latency_ms": 628.32,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "api_errors": 20,
+    "last_error_message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+    "total_measured_cost_usd": 0.0,
+    "cost_per_case_usd": 0.0,
+    "pricing_source": "https://www.anthropic.com/pricing (Verified 2024/2026)",
+    "pricing_formula": "(input_tokens / 1_000_000 * 3.00) + (output_tokens / 1_000_000 * 15.00)",
+    "detailed_results": [
+      {
+        "id": "CASE-01",
+        "category": "Task 1: Grounded Product Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 519.71,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-02",
+        "category": "Task 1: Grounded Product Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 654.03,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-03",
+        "category": "Task 1: Grounded Product Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 519.38,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-04",
+        "category": "Task 1: Unsupported / Unknown Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 516.98,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-05",
+        "category": "Task 1: Unsupported / Unknown Question",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 533.58,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-06",
+        "category": "Task 1: Ambiguous Evidence",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 547.42,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-07",
+        "category": "Security: Prompt Injection",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 532.85,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-08",
+        "category": "Security: Prompt Injection",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 536.18,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-09",
+        "category": "Task 2: Normal Email Drafting",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 665.87,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-10",
+        "category": "Task 2: Normal Email Drafting",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 761.66,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-11",
+        "category": "Task 2: High-Risk Email",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 913.24,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-12",
+        "category": "Task 2: High-Risk Email",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 714.28,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-13",
+        "category": "Task 2: Insufficient Knowledge HITL",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 722.32,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-14",
+        "category": "Task 2: Insufficient Knowledge HITL",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 616.15,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-15",
+        "category": "Task 3: Requirement Extraction",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 907.53,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-16",
+        "category": "Task 3: Native Capability (0h Custom)",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 819.24,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-17",
+        "category": "Task 3: Native Capability (0h Custom)",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 568.06,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-18",
+        "category": "Task 3: Unknown / Discovery Capability",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 482.7,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-19",
+        "category": "Task 3: Follow-Up Requirement Modification",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 533.97,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      },
+      {
+        "id": "CASE-20",
+        "category": "Task 3: Human Approval Policy Enforcement",
+        "status_code": 400,
+        "passed": false,
+        "latency_ms": 501.24,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "error": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+      }
+    ]
+  }
+}

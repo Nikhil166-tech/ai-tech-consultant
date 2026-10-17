@@ -1,4 +1,4 @@
-﻿import os
+import os
 import httpx
 import base64
 import asyncio
@@ -17,7 +17,8 @@ class VisionAnalyzer:
         if self.api_key:
             try:
                 import anthropic
-                self.client = anthropic.Anthropic(api_key=self.api_key)
+                headers = {"anthropic-workspace-id": settings.anthropic_workspace_id} if settings.anthropic_workspace_id else None
+                self.client = anthropic.Anthropic(api_key=self.api_key, default_headers=headers)
             except Exception as e:
                 logger.warning(f"Could not initialize Anthropic client for vision: {e}")
 
@@ -93,6 +94,10 @@ class VisionAnalyzer:
                         visual_status = "verified"
                     except Exception as e:
                         logger.info(f"Vision API analysis failed ({e}); falling back to preserved DOM context.")
+                        err_str = str(e).lower()
+                        if "credit balance is too low" in err_str or "not scoped to a workspace" in err_str or "400" in err_str or "401" in err_str or "403" in err_str:
+                            logger.warning("Permanent Anthropic API authentication/credit error detected; disabling live vision client for remainder of crawl.")
+                            self.client = None
 
         if not visual_verified:
             # Explicitly mark unverified/unavailable without asserting visual UI elements from filename

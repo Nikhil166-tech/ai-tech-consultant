@@ -14,6 +14,7 @@ services:
       - ENABLE_BACKGROUND_SYNC=false
       - KNOWLEDGE_DB_PATH=/data/knowledge_brain.db
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID:-}
       - ANTHROPIC_MODEL_TEXT=${ANTHROPIC_MODEL_TEXT:-claude-haiku-5-5}
       - ANTHROPIC_MODEL_VISION=${ANTHROPIC_MODEL_VISION:-claude-sonnet-5-5}
     healthcheck:
@@ -50,6 +51,7 @@ services:
       - PORT=3000
       - TASK1_API_URL=http://task1:8000
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID:-}
       - ANTHROPIC_MODEL_TEXT=${ANTHROPIC_MODEL_TEXT:-claude-haiku-5-5}
 
   task3:
@@ -68,6 +70,7 @@ services:
       - PORT=8002
       - TASK1_API_URL=http://task1:8000
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID:-}
       - ANTHROPIC_MODEL_TEXT=${ANTHROPIC_MODEL_TEXT:-claude-haiku-5-5}
 
 volumes:

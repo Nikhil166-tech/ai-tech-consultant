@@ -140,6 +140,7 @@ class ProductCapabilityCheckerAgent:
                     "x-api-key": self.api_key or "",
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
+                    **({"anthropic-workspace-id": os.getenv("ANTHROPIC_WORKSPACE_ID")} if os.getenv("ANTHROPIC_WORKSPACE_ID") else {}),
                 },
                 json={
                     "model": self.model,

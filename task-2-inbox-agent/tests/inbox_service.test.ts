@@ -1,5 +1,7 @@
-﻿import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { InboxService } from "../src/inbox_service.js";
+import { DraftGenerator } from "../src/drafting/generator.js";
+import { Task1KnowledgeClient } from "../src/knowledge/task1_client.js";
 import { CustomerEmail } from "../src/types/index.js";
 import { AutonomyEngine } from "../src/autonomy/engine.js";
 import { FeedbackStore } from "../src/feedback/store.js";
@@ -29,7 +31,8 @@ describe("InboxService Hardening & End-to-End", () => {
     });
 
     autonomyEngine.resetAll();
-    inbox = new InboxService({ autonomyEngine, feedbackStore, interactionStore });
+    const draftGenerator = new DraftGenerator({ apiKey: "", allowDeterministicAutoSend: false });
+    inbox = new InboxService({ autonomyEngine, feedbackStore, interactionStore, draftGenerator });
   });
 
   afterEach(() => {
@@ -229,7 +232,25 @@ describe("InboxService Hardening & End-to-End", () => {
   });
 
   it("deterministic fallback without API key is not auto-send eligible by default", async () => {
-    const defaultInbox = new InboxService();
+    const mockKnowledgeClient = {
+      askKnowledgeBrain: vi.fn().mockResolvedValue({
+        success: true,
+        isAvailable: true,
+        needsHumanEscalation: false,
+        response: {
+          answer: "Go to Finance > Payment Settings to configure Stripe keys.",
+          citations: [{ url: "https://support.brilliantdirectories.com/article", title: "Stripe Setup" }],
+          evidence_score: 0.95,
+          is_known: true,
+          needs_human_review: false
+        }
+      })
+    } as unknown as Task1KnowledgeClient;
+
+    const defaultInbox = new InboxService({
+      knowledgeClient: mockKnowledgeClient,
+      draftGenerator: new DraftGenerator({ apiKey: "" })
+    });
     expect(defaultInbox.draftGenerator.allowDeterministicAutoSend).toBe(false);
 
     const email: CustomerEmail = {

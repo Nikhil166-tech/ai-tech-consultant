@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import logging
 from typing import List, Dict, Any, Optional
@@ -27,7 +27,8 @@ class HybridRAGEngine:
         if self.api_key:
             try:
                 import anthropic
-                self.client = anthropic.Anthropic(api_key=self.api_key)
+                headers = {"anthropic-workspace-id": settings.anthropic_workspace_id} if settings.anthropic_workspace_id else None
+                self.client = anthropic.Anthropic(api_key=self.api_key, default_headers=headers)
             except Exception as e:
                 logger.warning(f"Could not initialize Anthropic client: {e}")
 

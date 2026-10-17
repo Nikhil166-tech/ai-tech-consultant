@@ -1,4 +1,4 @@
-﻿import {
+import {
   CustomerEmail,
   EmailClassification,
   Task1AskResponse,
@@ -21,7 +21,7 @@ export class DraftGenerator {
   public readonly allowDeterministicAutoSend: boolean;
 
   constructor(options: DraftGeneratorOptions = {}) {
-    this.apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
+    this.apiKey = options.apiKey !== undefined ? options.apiKey : process.env.ANTHROPIC_API_KEY;
     this.model = options.model || process.env.ANTHROPIC_MODEL_TEXT || "claude-haiku-5-5";
     this.feedbackStore = options.feedbackStore || new FeedbackStore();
     this.allowDeterministicAutoSend =
@@ -234,7 +234,8 @@ export class DraftGenerator {
       headers: {
         "x-api-key": this.apiKey!,
         "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
+        "content-type": "application/json",
+        ...(process.env.ANTHROPIC_WORKSPACE_ID ? { "anthropic-workspace-id": process.env.ANTHROPIC_WORKSPACE_ID } : {})
       },
       body: JSON.stringify({
         model: this.model,

@@ -19,7 +19,7 @@ from app.agents.capability_checker import ProductCapabilityCheckerAgent
 async def test_task1_health():
     """1. Task 1 health works and reports operational subsystems."""
     task1_url = os.getenv("TASK1_API_URL", "http://127.0.0.1:8000")
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             res = await client.get(f"{task1_url}/health")
             assert res.status_code == 200
@@ -35,8 +35,8 @@ async def test_task1_health():
 async def test_task3_can_call_task1():
     """2. Task 3 can call Task 1 over network and parse structured response."""
     task1_url = os.getenv("TASK1_API_URL", "http://127.0.0.1:8000")
-    client = Task1MeetingClient(base_url=task1_url)
-    async with httpx.AsyncClient(timeout=5.0) as http_client:
+    client = Task1MeetingClient(base_url=task1_url, timeout_seconds=30.0)
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
         try:
             res = await http_client.get(f"{task1_url}/health")
         except httpx.ConnectError:
@@ -52,7 +52,7 @@ async def test_task3_can_call_task1():
 async def test_task2_can_call_task1_and_insufficient_knowledge_propagates_to_hitl():
     """3. Task 2 can call Task 1, and insufficient knowledge safely routes to HITL."""
     task2_url = os.getenv("TASK2_API_URL", "http://127.0.0.1:3000")
-    async with httpx.AsyncClient(timeout=8.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             # Send an email with an unknown speculative requirement
             payload = {

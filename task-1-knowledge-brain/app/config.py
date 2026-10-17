@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    anthropic_workspace_id: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_WORKSPACE_ID", ""))
     anthropic_model_text: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL_TEXT", "claude-haiku-5-5"))
     anthropic_model_vision: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL_VISION", "claude-sonnet-5-5"))
     
