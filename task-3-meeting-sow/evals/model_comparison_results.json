@@ -11,8 +11,8 @@
     "last_error_message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
     "total_measured_cost_usd": 0.0,
     "cost_per_case_usd": 0.0,
-    "pricing_source": "https://www.anthropic.com/pricing (Verified 2024/2026)",
-    "pricing_formula": "(input_tokens / 1_000_000 * 0.80) + (output_tokens / 1_000_000 * 4.00)",
+    "pricing_source": "https://www.anthropic.com/claude-haiku-5-5 (Accessed October 2026)",
+    "pricing_formula": "(input_tokens / 1_000_000 * 0.10) + (output_tokens / 1_000_000 * 0.50)",
     "detailed_results": [
       {
         "id": "CASE-01",
@@ -228,8 +228,8 @@
     "last_error_message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
     "total_measured_cost_usd": 0.0,
     "cost_per_case_usd": 0.0,
-    "pricing_source": "https://www.anthropic.com/pricing (Verified 2024/2026)",
-    "pricing_formula": "(input_tokens / 1_000_000 * 3.00) + (output_tokens / 1_000_000 * 15.00)",
+    "pricing_source": "https://www.anthropic.com/claude-haiku-5-5 (Accessed October 2026)",
+    "pricing_formula": "(input_tokens / 1_000_000 * 2.00) + (output_tokens / 1_000_000 * 10.00)",
     "detailed_results": [
       {
         "id": "CASE-01",

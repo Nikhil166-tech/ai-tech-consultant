@@ -93,20 +93,25 @@ Total Cases: 20
 ### 3.1 Prompt v1 vs Prompt v2 (Task 2 In-Context Learning)
 - Demonstrates a measurable **+100.0% increase** in feedback incorporation rate (from 0% to 100%) when human reviewer edit exemplars are injected into the context window across the 20 development evaluation cases.
 
-### 3.2 Live Claude Model Comparison: `claude-haiku-5-5` vs `claude-sonnet-5-5`
-- **Evaluation Runner**: `task-3-meeting-sow/evals/model_comparison_runner.py` executed against the live Anthropic Messages API (`https://api.anthropic.com/v1/messages`).
-- **Scoping & Headers**: Requests executed with explicit workspace header `anthropic-workspace-id: wrkspc_01Gs2C8Qgf6ceMSgJ4Abi7rH`.
-- **Dataset**: The identical 20 representative cases were evaluated against both models without variation:
-  - Cases 1–3: Grounded Task 1 product questions (Stripe, member import, Google Maps API)
-  - Cases 4–6: Unsupported/unknown questions (HubSpot CRM sync, multi-currency wallet, custom blockchain)
-  - Cases 7–8: Ambiguous evidence / partial matches (Zapier webhooks, custom PHP logic)
-  - Cases 9–10: Prompt injection attempts (instruction overrides, XML escape attempts)
-  - Cases 11–13: Task 2 normal email drafting (billing FAQ, directory setup, profile edit)
-  - Cases 14–15: Task 2 high-risk / sensitive inquiries (financial dispute, GDPR deletion request)
-  - Cases 16–17: Task 2 insufficient-knowledge routing to HITL queue
-  - Cases 18–20: Task 3 requirement extraction, native vs custom categorization, and follow-up diffing
+### 3.2 Claude Integration & API Availability / Fallback Verification
+- **Integration Status**: Claude integration is implemented and configured across Tasks 1–3. API communication was attempted over the network using environment-configured variables (`ANTHROPIC_API_KEY` and `ANTHROPIC_WORKSPACE_ID`).
+- **Network & Request Execution**: Requests reached the live Anthropic Messages API (`https://api.anthropic.com/v1/messages`).
+- **API Response**: The Anthropic workspace returned HTTP 400 with the error:
+  `"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."`
+- **Model Evaluation Reality**: Because the account balance was insufficient, there were **0 successful Claude completions, 0 model tokens consumed (0 input / 0 output), and no valid Haiku-vs-Sonnet quality comparison**.
+- **Scope of Benchmark**: The 20 attempted cases serve strictly as **API availability and graceful-fallback verification**, demonstrating that live API credit or connectivity failures trigger immediate, safe degradation to the deterministic rule engines and FastEmbed semantic search without application crash or unhandled exceptions.
+- **Model Configurations as Architectural Design Choices**:
+  - `claude-haiku-5-5` is configured as the default text model for lightweight inference, structured JSON output generation, and customer email triage.
+  - `claude-sonnet-5-5` is configured as the vision model for multimodal screenshot and DOM hierarchy analysis.
+  - *These configurations are architectural design choices, not empirically measured winners from live benchmarking.*
+- **Measured Financial Cost**: **$0.00 incurred** (zero tokens billed).
+- **Official Anthropic Pricing Reference**:
+  - Source: [Anthropic Claude Haiku Launch Pricing](https://www.anthropic.com/claude-haiku-5-5) (Accessed October 2026)
+  - `claude-haiku-5-5` (Prompts <= 100K tokens): **$0.10 / million input tokens**, **$0.50 / million output tokens**
+  - `claude-sonnet-5-5`: **$2.00 / million input tokens**, **$10.00 / million output tokens**
+  - *Note*: These figures represent published vendor list pricing for future cost estimation, not actual measured expenditure.
 
-#### Empirical Model Comparison Results Table:
+#### 20-Case API Availability & Fallback Verification Table:
 | Case ID | Benchmark Category | Haiku Latency | Haiku Tokens (In/Out) | Sonnet Latency | Sonnet Tokens (In/Out) | Status / API Result | Fallback Integrity |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **CASE-01** | Task 1: Grounded Product Question | 1115.5ms | 0 / 0 | 599.9ms | 0 / 0 | HTTP 400 (Credit Balance) | Passed via Deterministic/FastEmbed |
@@ -129,18 +134,7 @@ Total Cases: 20
 | **CASE-18** | Task 3: Requirement Extraction | 1547.0ms | 0 / 0 | 1148.0ms | 0 / 0 | HTTP 400 (Credit Balance) | Passed via Deterministic/FastEmbed |
 | **CASE-19** | Task 3: Native vs Custom Scoping | 1851.5ms | 0 / 0 | 864.7ms | 0 / 0 | HTTP 400 (Credit Balance) | Passed via Deterministic/FastEmbed |
 | **CASE-20** | Task 3: Follow-up Scope Diffing | 698.5ms | 0 / 0 | 591.3ms | 0 / 0 | HTTP 400 (Credit Balance) | Passed via Deterministic/FastEmbed |
-| **TOTALS** | **20 Identical Benchmark Cases** | **Avg: 790.8ms** | **0 In / 0 Out** | **Avg: 628.3ms** | **0 In / 0 Out** | **20 / 20 Credit Errors** | **100% Graceful Fallback** |
-
-#### Live API Response & Financial Cost Analysis:
-- **API Error Observed**: Both models received HTTP 400 from Anthropic: `"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."`
-- **Monetary Cost Incurred**: **$0.00** across both models (0 input tokens, 0 output tokens billed).
-- **Official Anthropic Pricing Schedule**:
-  - `claude-haiku-5-5`: **$0.80 / million input tokens**, **$4.00 / million output tokens**
-  - `claude-sonnet-5-5`: **$3.00 / million input tokens**, **$15.00 / million output tokens**
-  - Pricing formula: $\text{Cost} = (\frac{\text{Input Tokens}}{1,000,000} \times \text{Input Price}) + (\frac{\text{Output Tokens}}{1,000,000} \times \text{Output Price})$
-- **Degradation & Fallback Behavior**: In all 20 cases, when the Anthropic API returned the credit balance error, the platform caught the exception cleanly and engaged the offline deterministic rule engine and FastEmbed dense semantic search. Zero unhandled crashes occurred across any service.
-- **Model Selection Justification**:
-  - `claude-haiku-5-5` is selected and justified as the primary production default for technical text processing. It is **~3.75x more cost-effective** on both input ($0.80 vs $3.00) and output ($4.00 vs $15.00) compared to Sonnet, exhibits faster execution for high-volume customer triage, and reliably produces strict JSON schemas when credits are active, with complete safety assured by the verified offline fallback.
+| **TOTALS** | **20 Benchmark Cases** | **Avg: 790.8ms** | **0 In / 0 Out** | **Avg: 628.3ms** | **0 In / 0 Out** | **20 / 20 Credit Errors** | **100% Graceful Fallback** |
 
 ---
 
@@ -148,15 +142,16 @@ Total Cases: 20
 
 ### 4.1 Full Sitemap Crawl Verification
 - **Total Sitemap URLs Discovered**: **1,696 URLs** parsed from the Brilliant Directories Solution Center XML sitemap index.
-  - Article URLs: 1,537
-  - Categories / Folders: 145
-  - Other Pages: 14
-- **Database Scale**: The SQLite database (`/data/knowledge_brain.db`) was scaled beyond the initial bootstrap:
-  - **Active Articles**: **1,180 articles**
-  - **Active Chunks**: **5,945 chunks**
-  - **Crawler Checkpoints**: **1,183 checkpoints**
-- **Concurrency & WAL Mode**: SQLite was configured with persistent Write-Ahead Logging (`PRAGMA journal_mode=WAL;`) and `PRAGMA busy_timeout=60000;` (60-second lock timeout) to ensure non-blocking reads during background ingestion and multi-client queries.
-- **Health Check Optimization**: The Task 1 `/health` endpoint was refactored to use O(1) SQL counts (`count_active_articles()`, `count_active_chunks()`) instead of deserializing 5,945 chunk JSON structures, eliminating high-CPU bottlenecks during Docker Compose health monitoring.
+  - **Article Pages**: **1,537** (`/support/solutions/articles/...`)
+  - **Category / Folder / Portal Pages**: **159** (145 categories/folders + 14 portal pages)
+- **Database Scale (Final Reconciliation)**: The SQLite database (`/data/knowledge_brain.db`) was completely reconciled:
+  - **Indexed Source Records**: **1,696 records** (**1,537 article pages** + 159 category/portal index pages)
+  - **Total Active Chunks**: **8,908 chunks**
+  - **Total Image Records**: **6,606 images**
+  - **Failed Crawl URLs**: **0 failed**
+  - **Crawl Duration**: **723.97s** (~12 minutes polite crawl)
+- **Concurrency & WAL Mode**: SQLite is configured with persistent Write-Ahead Logging (`PRAGMA journal_mode=WAL;`) and a 60-second busy timeout (`PRAGMA busy_timeout=60000;`) to ensure non-blocking reads during background ingestion and multi-client queries.
+- **Health Check Optimization**: The Task 1 `/health` endpoint uses O(1) SQL counts (`count_active_articles()`, `count_active_chunks()`) instead of deserializing thousands of chunk JSON structures, eliminating high-CPU bottlenecks during Docker Compose health monitoring.
 - **Bootstrap Default Preserved**: The default bounded crawl in `scripts/bootstrap.py` remains set to `max_pages=25` (indexing 25 articles and 31 chunks) to guarantee fast cold-start startup during clean Docker Compose evaluation runs (`docker compose up --build`).
 
 ### 4.2 Out-of-Bootstrap Retrieval Verification

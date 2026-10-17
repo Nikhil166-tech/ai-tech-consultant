@@ -108,20 +108,24 @@ graph TD
 
 ---
 
-## 5. Model Selection & Justification
- 
-We configure Anthropic Claude models with deterministic offline fallbacks:
-- **Text Reasoning Default (`claude-haiku-5-5`)**:
-  - **Rationale & Pricing**: Selected as the default text model for lightweight inference, structured JSON output generation, and cost-effective triage across high-volume email classification and requirement parsing tasks. At **$0.80 / million input tokens** and **$4.00 / million output tokens**, Haiku is ~3.75x cheaper than Sonnet while delivering equivalent structural extraction reliability.
-- **Vision Default (`claude-sonnet-5-5`)**:
-  - **Rationale & Pricing**: Configured for multimodal vision analysis where UI layout understanding and screenshot transcription of admin dashboards are required ($3.00 / million input, $15.00 / million output).
+## 5. Model Selection & Integration Architecture
+
+We configure Anthropic Claude models with deterministic offline fallbacks across Tasks 1–3:
+- **Text Reasoning Configuration (`claude-haiku-5-5`)**:
+  - **Design Choice**: Configured as the default text model for lightweight inference, structured JSON output generation, and high-volume customer email triage. Published list pricing is $0.10 / million input tokens (for prompts <= 100K) and $0.50 / million output tokens (Source: Anthropic Claude Haiku release notes, October 2026).
+- **Vision Configuration (`claude-sonnet-5-5`)**:
+  - **Design Choice**: Configured as the default vision model for multimodal screenshot and DOM hierarchy analysis. Published list pricing is $2.00 / million input and $10.00 / million output tokens.
+  - *Note on Model Roles*: These configurations represent architectural design choices, not empirically measured winners from live benchmarking.
 - **Anthropic Workspace Scoping**:
-  - **Implementation**: Anthropic API requests pass the header `anthropic-workspace-id: wrkspc_01Gs2C8Qgf6ceMSgJ4Abi7rH` (configurable via `ANTHROPIC_WORKSPACE_ID`) to ensure proper organization and workspace routing.
-- **Empirical 20-Case Multi-Model Evaluation**:
-  - Both `claude-haiku-5-5` and `claude-sonnet-5-5` were tested on an identical 20-case representative benchmark covering grounded queries, unsupported scopes, ambiguous evidence, prompt injection, email drafting, high-risk emails, HITL escalation, and SOW requirement extraction.
-  - Live requests verified HTTP 400 credit balance exhaustion handling, with 100% of benchmark cases safely degrading to deterministic rule engines and FastEmbed semantic search without application failure.
-- **Zero-Key Deterministic Fallback**:
-  - **Rationale**: If `ANTHROPIC_API_KEY` is not provided in the environment or an API credit error occurs, the entire system falls back to deterministic rule engines, semantic vector search, and heuristic parsers, ensuring tests, local evaluations, and CI/CD pipelines run reliably offline without external API dependencies.
+  - **Implementation**: Anthropic API requests pass the header `anthropic-workspace-id` via the environment variable `ANTHROPIC_WORKSPACE_ID` along with `x-api-key` via `ANTHROPIC_API_KEY` to ensure proper organization and workspace routing.
+- **Claude Integration & Fallback Verification**:
+  - Claude integration is implemented and configured in Tasks 1–3. Network requests were executed against the live Anthropic Messages API.
+  - The Anthropic workspace returned HTTP 400 due to an insufficient API credit balance (`"Your credit balance is too low to access the Anthropic API"`).
+  - Consequently, there were 0 successful Claude completions, 0 model tokens consumed, and no valid Haiku-vs-Sonnet quality comparison.
+  - The 20 attempted benchmark cases verify API availability and graceful fallback: in all instances, credit and network exceptions were caught cleanly and degraded to deterministic rule engines and FastEmbed semantic search with zero application crashes.
+  - **Actual inference cost incurred**: **$0.00**.
+- **Deterministic Offline Fallback**:
+  - **Rationale**: When `ANTHROPIC_API_KEY` is not provided in the environment or an API credit error occurs, the entire system falls back to deterministic rule engines, semantic vector search, and heuristic parsers, ensuring tests, local evaluations, and CI/CD pipelines run reliably offline without external API dependencies.
 - **Corpus & Heuristic Scoring Limitations**:
   - Task 1 operates under a bounded 25-page initial bootstrap index from the Brilliant Directories Solution Center. Evidence scores use an uncalibrated heuristic scoring engine based on hybrid search overlap and term coverage. Third-party integrations (e.g., external CRMs like HubSpot) can retrieve semantically related Developer Hub/API pages, resulting in partial heuristic scores (`evidence_score=0.609`, `PARTIAL`, `is_known=true`). Task 3 independently enforces capability checks to allocate unverified or third-party scopes to discovery hours rather than assuming native support.
 
