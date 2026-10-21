@@ -21,15 +21,33 @@ graph TD
 
 ---
 
-## One-Command Startup
+## Startup Options
 
+### Option 1: One-Command Docker Startup
 Start all three services across the container network with automated database bootstrapping and persistent volumes:
 
 ```bash
 docker compose up --build
 ```
 
-> **Deployment Verification**: Clean multi-container startup has been verified with `docker compose down -v` followed by `docker compose up --build`. Task 1 (`task1-knowledge-brain`) became healthy within its FastEmbed cold-start healthcheck window, `task1-bootstrap` completed successfully (`added=25`, 25 articles, 31 chunks) and exited with code 0, Task 2 (`task2-inbox-agent`) started successfully on port 3000, Task 3 (`task3-meeting-sow`) started successfully on port 8002, and `/health` returned healthy for all three services.
+### Option 2: Local Native Startup (Without Docker)
+Start each service directly in its own terminal window:
+
+```bash
+# Terminal 1: Task 1 Knowledge Brain (Port 8000)
+cd task-1-knowledge-brain
+python -m uvicorn app.main:app --port 8000 --reload
+
+# Terminal 2: Task 2 Inbox Agent (Port 3000)
+cd task-2-inbox-agent
+npm run dev
+
+# Terminal 3: Task 3 Meeting-to-Scope (Port 8002)
+cd task-3-meeting-sow
+python -m uvicorn app.server:app --port 8002 --reload
+```
+
+> **Deployment Verification**: Clean multi-container startup has been verified with `docker compose down -v` followed by `docker compose up --build`. Task 1 (`task1-knowledge-brain`) became healthy within its FastEmbed cold-start healthcheck window, `task1-bootstrap` completed successfully (`added=25`, 25 articles, 31 chunks) and exited with code 0, Task 2 (`task2-inbox-agent`) started successfully on port 3000, Task 3 (`task3-meeting-sow`) started successfully on port 8002, and `/health` returned healthy for all three services. All services also run smoothly in native local mode without Docker.
 
 ### Service Ports & Demo Entry Points
 | Service | Container Port | Host URL | Key Endpoints / UI |
