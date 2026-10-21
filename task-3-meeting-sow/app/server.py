@@ -25,6 +25,11 @@ def create_app(orchestrator: PipelineOrchestrator | None = None) -> FastAPI:
     )
     orch = orchestrator or PipelineOrchestrator()
 
+    @app.get("/")
+    def root():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/docs")
+
     @app.get("/health")
     def health():
         return {"status": "healthy", "service": "task-3-meeting-sow"}
