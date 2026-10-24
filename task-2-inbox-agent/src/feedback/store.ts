@@ -1,4 +1,4 @@
-﻿import fs from "fs";
+import fs from "fs";
 import path from "path";
 import { HumanReviewRecord } from "../types/index.js";
 
@@ -16,27 +16,46 @@ export class FeedbackStore {
     this.persist();
   }
 
-  public getHistory(kindKey?: string): HumanReviewRecord[] {
-    if (!kindKey) {
+  public getHistory(key?: string): HumanReviewRecord[] {
+    if (!key) {
       return [...this.records];
     }
-    return this.records.filter((r) => r.kindKey === kindKey);
+    return this.records.filter((r) => r.kindKey === key || r.labelKey === key);
   }
 
-  public getApprovedExemplars(kindKey: string, limit: number = 3): HumanReviewRecord[] {
+  public getApprovedExemplars(key: string, limit: number = 3): HumanReviewRecord[] {
     return this.records
-      .filter((r) => r.kindKey === kindKey && (r.action === "APPROVE" || r.wasUnchanged))
+      .filter((r) => (r.kindKey === key || r.labelKey === key) && (r.action === "APPROVE" || r.wasUnchanged))
       .slice(-limit);
   }
 
-  public getEditedCorrections(kindKey: string, limit: number = 3): HumanReviewRecord[] {
+  public getEditedCorrections(key: string, limit: number = 3): HumanReviewRecord[] {
     return this.records
-      .filter((r) => r.kindKey === kindKey && r.action === "EDIT" && !r.wasUnchanged)
+      .filter((r) => (r.kindKey === key || r.labelKey === key) && r.action === "EDIT" && !r.wasUnchanged)
       .slice(-limit);
   }
 
-  public computeMetrics() {
-    const total = this.records.length;
+  /**
+   * Retrieves reviewed corrections for a setting type/label that were approved/edited
+   * within the past N minutes (default 5 minutes) for immediate few-shot guidance.
+   */
+  public getRecentCorrections(key: string, withinMinutes: number = 5, limit: number = 3): HumanReviewRecord[] {
+    const cutoff = Date.now() - withinMinutes * 60 * 1000;
+    return this.records
+      .filter((r) => {
+        const matchesKey = r.kindKey === key || r.labelKey === key;
+        if (!matchesKey) return false;
+        const reviewTime = new Date(r.reviewedAt).getTime();
+        return reviewTime >= cutoff;
+      })
+      .slice(-limit);
+  }
+
+  public computeMetrics(key?: string) {
+    const list = key
+      ? this.records.filter((r) => r.kindKey === key || r.labelKey === key)
+      : this.records;
+    const total = list.length;
     if (total === 0) {
       return {
         totalReviews: 0,
@@ -48,9 +67,9 @@ export class FeedbackStore {
         rejectRate: 0
       };
     }
-    const unchangedCount = this.records.filter((r) => r.wasUnchanged).length;
-    const editCount = this.records.filter((r) => r.action === "EDIT").length;
-    const rejectCount = this.records.filter((r) => r.action === "REJECT").length;
+    const unchangedCount = list.filter((r) => r.wasUnchanged).length;
+    const editCount = list.filter((r) => r.action === "EDIT").length;
+    const rejectCount = list.filter((r) => r.action === "REJECT").length;
 
     return {
       totalReviews: total,

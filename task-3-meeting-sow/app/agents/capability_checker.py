@@ -133,26 +133,44 @@ class ProductCapabilityCheckerAgent:
             f"Task 1 Evidence:\nAnswer: {answer}\nCitations:\n{cit_text}"
         )
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": self.api_key or "",
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                    **({"anthropic-workspace-id": os.getenv("ANTHROPIC_WORKSPACE_ID")} if os.getenv("ANTHROPIC_WORKSPACE_ID") else {}),
-                },
-                json={
-                    "model": self.model,
-                    "max_tokens": 500,
-                    "system": system_prompt,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                },
-            )
+        gemini_key = os.getenv("GEMINI_API_KEY") or (self.api_key if self.api_key and not self.api_key.startswith("sk-ant-") else None)
+        if gemini_key:
+            gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.post(
+                    url,
+                    json={
+                        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                        "systemInstruction": {"parts": [{"text": system_prompt}]},
+                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 600}
+                    }
+                )
+        else:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": self.api_key or "",
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                        **({"anthropic-workspace-id": os.getenv("ANTHROPIC_WORKSPACE_ID")} if os.getenv("ANTHROPIC_WORKSPACE_ID") else {}),
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 500,
+                        "system": system_prompt,
+                        "messages": [{"role": "user", "content": user_prompt}],
+                    },
+                )
 
         if res.status_code == 200:
             data = res.json()
-            raw_text = data["content"][0]["text"].strip()
+            raw_text = ""
+            if "candidates" in data and data["candidates"]:
+                raw_text = data["candidates"][0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+            elif "content" in data and data["content"]:
+                raw_text = data["content"][0].get("text", "").strip()
             match = re.search(r"\{[\s\S]*\}", raw_text)
             if match:
                 parsed = json.loads(match.group(0))

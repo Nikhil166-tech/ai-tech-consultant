@@ -1,5 +1,7 @@
-﻿import express, { Request, Response } from "express";
+import express, { Request, Response } from "express";
 import cors from "cors";
+import path from "path";
+import fs from "fs";
 import { InboxService } from "../inbox_service.js";
 import { CustomerEmailSchema, ReviewSubmissionSchema, AutonomyRevocationSchema } from "../validation/schemas.js";
 
@@ -18,6 +20,56 @@ export function createServer(inboxService?: InboxService) {
       timestamp: new Date().toISOString()
     });
   });
+
+  // Proxy Task 1 Knowledge Brain routes when accessed through unified server (e.g. port 3000)
+  const task1Url = process.env.TASK1_URL || "http://localhost:8000";
+  const task1Prefixes = [
+    "/api/v1/sitemaps",
+    "/api/v1/refresh-runs",
+    "/api/v1/quarantine",
+    "/api/v1/health-observations",
+    "/api/v1/settings",
+    "/api/v1/auth",
+    "/api/v1/ask",
+    "/api/v1/articles"
+  ];
+
+  for (const prefix of task1Prefixes) {
+    app.all(`${prefix}*`, async (req: Request, res: Response): Promise<void> => {
+      try {
+        const targetUrl = `${task1Url}${req.originalUrl}`;
+        const headers: Record<string, string> = {};
+        if (req.headers["content-type"]) {
+          headers["Content-Type"] = req.headers["content-type"] as string;
+        } else if (["POST", "PUT", "PATCH"].includes(req.method)) {
+          headers["Content-Type"] = "application/json";
+        }
+        if (req.headers.cookie) headers["Cookie"] = req.headers.cookie as string;
+        if (req.headers.authorization) headers["Authorization"] = req.headers.authorization as string;
+
+        const response = await fetch(targetUrl, {
+          method: req.method,
+          headers,
+          body: ["POST", "PUT", "PATCH"].includes(req.method) ? JSON.stringify(req.body) : undefined
+        });
+
+        res.status(response.status);
+        const setCookie = response.headers.get("set-cookie");
+        if (setCookie) res.setHeader("set-cookie", setCookie);
+
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const data = await response.json();
+          res.json(data);
+        } else {
+          const text = await response.text();
+          res.send(text);
+        }
+      } catch (err: any) {
+        res.status(502).json({ error: `Failed to proxy to Task 1 Knowledge Brain at ${task1Url}: ${err.message}` });
+      }
+    });
+  }
 
   // 1. Process customer email
   app.post("/api/v1/emails/process", async (req: Request, res: Response): Promise<void> => {
@@ -100,6 +152,251 @@ export function createServer(inboxService?: InboxService) {
       message: `Autonomy revoked for '${kindKey}'`,
       state: updatedState
     });
+  });
+
+  // 6. Label-based autonomy status & streaks
+  app.get("/api/v1/autonomy/labels", (_req: Request, res: Response): void => {
+    const states = service.autonomyEngine.getAllLabelStates();
+    res.json({ count: states.length, labels: states });
+  });
+
+  app.put("/api/v1/autonomy/labels/threshold", (req: Request, res: Response): void => {
+    const { labelKey, threshold } = req.body;
+    if (!labelKey || typeof threshold !== "number") {
+      res.status(400).json({ error: "labelKey string and threshold number are required" });
+      return;
+    }
+    const updated = service.autonomyEngine.setLabelThreshold(labelKey, threshold);
+    res.json(updated);
+  });
+
+  app.put("/api/v1/autonomy/labels/toggle", (req: Request, res: Response): void => {
+    const { labelKey, disabled } = req.body;
+    if (!labelKey || typeof disabled !== "boolean") {
+      res.status(400).json({ error: "labelKey string and disabled boolean are required" });
+      return;
+    }
+    const updated = service.autonomyEngine.setLabelDisabled(labelKey, disabled);
+    res.json(updated);
+  });
+
+  // 7. Global autonomy settings & emergency stop
+  app.get("/api/v1/autonomy/settings", (_req: Request, res: Response): void => {
+    res.json(service.autonomyEngine.getGlobalSettings());
+  });
+
+  app.put("/api/v1/autonomy/settings", (req: Request, res: Response): void => {
+    const updated = service.autonomyEngine.updateGlobalSettings(req.body);
+    res.json(updated);
+  });
+
+  app.post("/api/v1/autonomy/emergency-stop", (req: Request, res: Response): void => {
+    const { enabled } = req.body;
+    const isStop = typeof enabled === "boolean" ? enabled : true;
+    service.autonomyEngine.setEmergencyStop(isStop);
+    res.json({
+      emergencyStop: isStop,
+      message: isStop ? "EMERGENCY STOP ACTIVATED: All automated email sending is disabled." : "Emergency stop deactivated."
+    });
+  });
+
+  // 8. Classification Taxonomy management
+  app.get("/api/v1/taxonomy", (_req: Request, res: Response): void => {
+    res.json(service.classifier.getTaxonomy());
+  });
+
+  app.put("/api/v1/taxonomy", (req: Request, res: Response): void => {
+    if (!Array.isArray(req.body)) {
+      res.status(400).json({ error: "Taxonomy payload must be an array of TaxonomyItem objects" });
+      return;
+    }
+    service.classifier.updateTaxonomy(req.body);
+    res.json({ success: true, count: req.body.length, taxonomy: service.classifier.getTaxonomy() });
+  });
+
+  // 9. Gmail Integration Endpoints
+  app.get("/api/v1/gmail/status", (_req: Request, res: Response): void => {
+    res.json(service.gmailClient.getStatus());
+  });
+
+  app.get("/api/v1/gmail/auth-url", (_req: Request, res: Response): void => {
+    try {
+      if (!service.gmailClient.isConfigured()) {
+        res.status(400).json({
+          error: "Google OAuth credentials not configured",
+          message: "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env to enable real Gmail OAuth."
+        });
+        return;
+      }
+      const url = service.gmailClient.getAuthorizationUrl();
+      res.json({ url });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to generate authorization URL" });
+    }
+  });
+
+  app.get("/api/v1/gmail/callback", async (req: Request, res: Response): Promise<void> => {
+    const code = req.query.code as string;
+    if (!code) {
+      res.status(400).json({ error: "Authorization code missing in callback query" });
+      return;
+    }
+    try {
+      await service.gmailClient.exchangeCodeForTokens(code);
+      res.send(`
+        <html>
+          <body style="font-family: sans-serif; text-align: center; padding-top: 50px; background: #0f172a; color: #f8fafc;">
+            <h2 style="color: #10b981;">Gmail Connected Successfully!</h2>
+            <p>You can close this window and return to the application.</p>
+            <script>setTimeout(() => window.close(), 2500);</script>
+          </body>
+        </html>
+      `);
+    } catch (err: any) {
+      res.status(500).send(`<h2>Connection Failed: ${err?.message}</h2>`);
+    }
+  });
+
+  app.post("/api/v1/gmail/disconnect", async (_req: Request, res: Response): Promise<void> => {
+    await service.gmailClient.disconnect();
+    res.json({ success: true, message: "Gmail account disconnected" });
+  });
+
+  app.post("/api/v1/gmail/mock-connect", (req: Request, res: Response): void => {
+    const email = req.body.email || "demo.support@brilliantdirectories.com";
+    const name = req.body.name || "BD Demo Support";
+    service.gmailClient.connectMockAccount(email, name);
+    res.json({ success: true, status: service.gmailClient.getStatus() });
+  });
+
+  app.post("/api/v1/gmail/sync", async (req: Request, res: Response): Promise<void> => {
+    try {
+      const maxCount = req.body.maxCount ? parseInt(req.body.maxCount, 10) : 20;
+      const result = await service.syncGmail(maxCount);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Gmail sync failed" });
+    }
+  });
+
+  app.post("/api/v1/emails/:interactionId/send-gmail", async (req: Request, res: Response): Promise<void> => {
+    try {
+      const interactionId = Array.isArray(req.params.interactionId) ? req.params.interactionId[0] : req.params.interactionId;
+      const result = await service.sendApprovedEmailViaGmail(interactionId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Failed to send email via Gmail" });
+    }
+  });
+
+  // 10. Feedback metrics & interactions history
+  app.get("/api/v1/feedback/metrics", (req: Request, res: Response): void => {
+    const key = req.query.key as string | undefined;
+    res.json(service.feedbackStore.computeMetrics(key));
+  });
+
+  app.get("/api/v1/feedback/history", (req: Request, res: Response): void => {
+    const key = req.query.key as string | undefined;
+    res.json(service.feedbackStore.getHistory(key));
+  });
+
+  app.get("/api/v1/inbox/interactions", (_req: Request, res: Response): void => {
+    res.json(service.interactionStore.getAllInteractions());
+  });
+
+  // 11. Gemini API Configuration & Verification
+  app.get("/api/v1/settings/gemini", (_req: Request, res: Response): void => {
+    const key = process.env.GEMINI_API_KEY || (service.draftGenerator.apiKey && !service.draftGenerator.apiKey.startsWith("sk-ant-") ? service.draftGenerator.apiKey : "");
+    const maskedKey = key ? `${key.slice(0, 6)}...${key.slice(-4)}` : "";
+    res.json({
+      apiKeyConfigured: Boolean(key),
+      maskedKey,
+      model: process.env.GEMINI_MODEL || service.draftGenerator.model || "gemini-3.5-flash"
+    });
+  });
+
+  app.post("/api/v1/settings/gemini", async (req: Request, res: Response): Promise<void> => {
+    try {
+      const apiKey = (req.body.apiKey || "").trim();
+      const model = (req.body.model || process.env.GEMINI_MODEL || "gemini-3.5-flash").trim();
+
+      if (!apiKey) {
+        res.status(400).json({ error: "Gemini API key is required" });
+        return;
+      }
+
+      // Verify key by testing generateContent
+      let verified = false;
+      let verificationMessage = "API key saved successfully";
+      try {
+        const testRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: [{ text: "Hello, reply with 1 word." }] }],
+              generationConfig: { maxOutputTokens: 5 }
+            })
+          }
+        );
+        if (testRes.ok) {
+          verified = true;
+          verificationMessage = "Google Gemini API key verified and working!";
+        } else {
+          const errBody = await testRes.text().catch(() => "");
+          verificationMessage = `Key saved, but Gemini verification returned HTTP ${testRes.status}: ${errBody}`;
+        }
+      } catch (err: any) {
+        verificationMessage = `Key saved, but verification test failed: ${err.message}`;
+      }
+
+      // Update runtime environment & draftGenerator
+      process.env.GEMINI_API_KEY = apiKey;
+      process.env.GEMINI_MODEL = model;
+      service.draftGenerator.apiKey = apiKey;
+      service.draftGenerator.model = model;
+
+      // Persist to .env files
+      const envPaths = [
+        path.resolve(process.cwd(), ".env"),
+        path.resolve(process.cwd(), "../.env"),
+        path.resolve(process.cwd(), "../task-1-knowledge-brain/.env"),
+        path.resolve(process.cwd(), "../task-2-inbox-agent/.env"),
+        path.resolve(process.cwd(), "../task-3-meeting-sow/.env")
+      ];
+
+      for (const p of envPaths) {
+        try {
+          if (fs.existsSync(p)) {
+            let content = fs.readFileSync(p, "utf-8");
+            if (content.includes("GEMINI_API_KEY=")) {
+              content = content.replace(/GEMINI_API_KEY=.*/g, `GEMINI_API_KEY=${apiKey}`);
+            } else {
+              content += `\nGEMINI_API_KEY=${apiKey}\n`;
+            }
+            if (content.includes("GEMINI_MODEL=")) {
+              content = content.replace(/GEMINI_MODEL=.*/g, `GEMINI_MODEL=${model}`);
+            } else {
+              content += `GEMINI_MODEL=${model}\n`;
+            }
+            fs.writeFileSync(p, content, "utf-8");
+          }
+        } catch {
+          // ignore error writing to secondary paths
+        }
+      }
+
+      res.json({
+        success: true,
+        verified,
+        message: verificationMessage,
+        model,
+        maskedKey: `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to update Gemini settings" });
+    }
   });
 
   // Embedded HITL Review UI (Strictly hardened against XSS)
@@ -230,6 +527,19 @@ export function createServer(inboxService?: InboxService) {
     res.setHeader("Content-Type", "text/html");
     res.send(html);
   });
+
+  // Serve production React frontend if built
+  try {
+    const frontendDist = path.resolve(process.cwd(), "..", "frontend", "dist");
+    if (fs.existsSync(frontendDist)) {
+      app.use(express.static(frontendDist));
+      app.get("/", (_req: Request, res: Response) => {
+        res.sendFile(path.join(frontendDist, "index.html"));
+      });
+    }
+  } catch {
+    // Ignore static resolution errors in isolated test runs
+  }
 
   return app;
 }

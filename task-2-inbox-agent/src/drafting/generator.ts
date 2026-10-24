@@ -15,14 +15,14 @@ export interface DraftGeneratorOptions {
 }
 
 export class DraftGenerator {
-  public readonly apiKey?: string;
-  private readonly model: string;
+  public apiKey?: string;
+  public model: string;
   private readonly feedbackStore: FeedbackStore;
   public readonly allowDeterministicAutoSend: boolean;
 
   constructor(options: DraftGeneratorOptions = {}) {
-    this.apiKey = options.apiKey !== undefined ? options.apiKey : process.env.ANTHROPIC_API_KEY;
-    this.model = options.model || process.env.ANTHROPIC_MODEL_TEXT || "claude-haiku-5-5";
+    this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY);
+    this.model = options.model || process.env.GEMINI_MODEL || (process.env.GEMINI_API_KEY ? "gemini-3.5-flash" : (process.env.ANTHROPIC_MODEL_TEXT || "gemini-3.5-flash"));
     this.feedbackStore = options.feedbackStore || new FeedbackStore();
     this.allowDeterministicAutoSend =
       options.allowDeterministicAutoSend ?? (process.env.ALLOW_DETERMINISTIC_AUTO_SEND === "true");
@@ -59,12 +59,12 @@ export class DraftGenerator {
     let bodyText = "";
     let modelFailed = false;
 
-    // Try Claude API if key present
+    // Try Gemini / LLM API if key present
     if (this.apiKey) {
       try {
-        bodyText = await this.synthesizeWithClaude(email, classification, knowledge, version);
+        bodyText = await this.synthesizeWithLLM(email, classification, knowledge, version);
       } catch (err) {
-        console.warn("Claude API synthesis failed:", err);
+        console.warn("LLM API synthesis failed:", err);
         modelFailed = true;
       }
     }
@@ -195,17 +195,17 @@ export class DraftGenerator {
   }
 
   /**
-   * Claude synthesis hardened against prompt injection.
+   * Gemini / LLM synthesis hardened against prompt injection.
    * Treats customer email as strictly untrusted user input delimited in XML tags.
    */
-  private async synthesizeWithClaude(
+  private async synthesizeWithLLM(
     email: CustomerEmail,
     classification: EmailClassification,
     knowledge: Task1AskResponse | undefined,
     version: "v1_baseline" | "v2_feedback_enhanced"
   ): Promise<string> {
     const feedbackContext = version === "v2_feedback_enhanced"
-      ? this.buildFeedbackContext(classification.kind.key)
+      ? this.buildFeedbackContext(classification)
       : "";
 
     const systemPrompt =
@@ -229,37 +229,87 @@ export class DraftGenerator {
       `</verified_knowledge_evidence>\n\n` +
       `Draft a direct, professional, helpful customer reply based strictly on the verified evidence above.`;
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    // If key starts with sk-ant-, use Anthropic for backward compatibility with Anthropic keys
+    if (this.apiKey?.startsWith("sk-ant-")) {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": this.apiKey!,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          ...(process.env.ANTHROPIC_WORKSPACE_ID ? { "anthropic-workspace-id": process.env.ANTHROPIC_WORKSPACE_ID } : {})
+        },
+        body: JSON.stringify({
+          model: this.model.includes("gemini") ? "claude-haiku-5-5" : this.model,
+          max_tokens: 500,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }]
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Claude API error HTTP ${res.status}`);
+      }
+
+      const data: any = await res.json();
+      return data.content[0].text.trim();
+    }
+
+    // Default: Google Gemini API Workflow
+    const geminiModel = this.model.includes("claude") ? "gemini-3.5-flash" : this.model;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${this.apiKey}`;
+    const res = await fetch(url, {
       method: "POST",
       headers: {
-        "x-api-key": this.apiKey!,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-        ...(process.env.ANTHROPIC_WORKSPACE_ID ? { "anthropic-workspace-id": process.env.ANTHROPIC_WORKSPACE_ID } : {})
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: this.model,
-        max_tokens: 500,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }]
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: userPrompt }]
+          }
+        ],
+        systemInstruction: {
+          parts: [{ text: systemPrompt }]
+        },
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 600
+        }
       })
     });
 
     if (!res.ok) {
-      throw new Error(`Claude API error HTTP ${res.status}`);
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Gemini API error HTTP ${res.status}: ${errText}`);
     }
 
     const data: any = await res.json();
-    return data.content[0].text.trim();
+    const candidateText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!candidateText) {
+      throw new Error("No text content returned from Gemini API");
+    }
+    return candidateText.trim();
   }
 
-  private buildFeedbackContext(kindKey: string): string {
-    const approved = this.feedbackStore.getApprovedExemplars(kindKey, 2);
-    const corrections = this.feedbackStore.getEditedCorrections(kindKey, 2);
+  private buildFeedbackContext(classification: EmailClassification | string): string {
+    const kindKey = typeof classification === "string" ? classification : classification.kind.key;
+    const labelKey = typeof classification === "string" ? classification : classification.labelKey;
 
-    let context = "\n[HUMAN REVIEWER FEEDBACK GUIDELINES]:\n";
+    // Phase 10: 5-minute correction availability
+    const recent5Min = this.feedbackStore.getRecentCorrections(labelKey, 5, 2);
+    const approved = this.feedbackStore.getApprovedExemplars(labelKey || kindKey, 2);
+    const corrections = recent5Min.length > 0
+      ? recent5Min
+      : this.feedbackStore.getEditedCorrections(labelKey || kindKey, 2);
+
+    let context = "\n[HUMAN REVIEWER FEEDBACK GUIDELINES - UNTRUSTED EXEMPLARS]:\n";
+    if (recent5Min.length > 0) {
+      context += `[RECENT 5-MINUTE CORRECTION]: Human specialist corrected ${labelKey || kindKey} within the last 5 minutes:\n`;
+    }
     if (corrections.length > 0) {
-      context += "Past human edits on this exact topic corrected the following:\n";
+      context += "Past human edits on this topic corrected the following:\n";
       corrections.forEach((c, idx) => {
         context += `Correction ${idx + 1}: ${c.diffSummary || "Revised phrasing for precision and clarity."}\n`;
       });

@@ -16,3 +16,7 @@ task-2-inbox-agent/data/interactions.json
 task-2-inbox-agent/data/auto_deliveries.json
  
 task-3-meeting-sow/data/*.json
+
+*.zip
+*gmail_tokens.json
+

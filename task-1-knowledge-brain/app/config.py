@@ -5,6 +5,9 @@ from pydantic import Field
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    gemini_api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", os.getenv("ANTHROPIC_API_KEY", "")))
+    gemini_model_text: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL_TEXT", os.getenv("GEMINI_MODEL", "gemini-3.5-flash")))
+    gemini_model_vision: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL_VISION", os.getenv("GEMINI_MODEL", "gemini-3.5-flash")))
     anthropic_api_key: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     anthropic_workspace_id: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_WORKSPACE_ID", ""))
     anthropic_model_text: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL_TEXT", "claude-haiku-5-5"))

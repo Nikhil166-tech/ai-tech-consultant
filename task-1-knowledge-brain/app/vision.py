@@ -23,27 +23,16 @@ class VisionAnalyzer:
                 logger.warning(f"Could not initialize Anthropic client for vision: {e}")
 
     async def _fetch_image_bytes(self, image_url: str) -> Optional[tuple[bytes, str]]:
-        """Fetches image bytes with retry and exponential backoff for transient 5xx/network errors."""
-        max_retries = settings.max_retries
-        backoff = settings.retry_backoff_factor
-
-        for attempt in range(max_retries):
-            try:
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                    resp = await client.get(image_url)
-                    if resp.status_code == 200:
-                        content_type = resp.headers.get("content-type", "image/png").split(";")[0]
-                        return resp.content, content_type
-                    elif resp.status_code in [408, 429, 500, 502, 503, 504]:
-                        await asyncio.sleep(backoff * (2 ** attempt))
-                    else:
-                        # 4xx client errors should not be retried
-                        return None
-            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError):
-                await asyncio.sleep(backoff * (2 ** attempt))
-            except Exception:
+        """Fetches image bytes with short timeout to prevent slow indexing on external documentation images."""
+        try:
+            async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
+                resp = await client.get(image_url)
+                if resp.status_code == 200:
+                    content_type = resp.headers.get("content-type", "image/png").split(";")[0]
+                    return resp.content, content_type
                 return None
-        return None
+        except Exception:
+            return None
 
     async def analyze_image(
         self,
@@ -64,7 +53,47 @@ class VisionAnalyzer:
         visual_verified = False
         visual_status = "unavailable"
 
-        if self.client and image_url.startswith("http"):
+        gemini_key = os.getenv("GEMINI_API_KEY", "") or settings.gemini_api_key
+        if gemini_key and not gemini_key.startswith("sk-ant-") and image_url.startswith("http"):
+            img_data = await self._fetch_image_bytes(image_url)
+            if img_data:
+                content, content_type = img_data
+                if content_type in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
+                    try:
+                        b64_data = base64.b64encode(content).decode("utf-8")
+                        gemini_model = os.getenv("GEMINI_MODEL_VISION", os.getenv("GEMINI_MODEL", settings.gemini_model_vision)) or "gemini-3.5-flash"
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}"
+                        prompt = (
+                            f"You are analyzing a screenshot from a technical help article titled '{article_title}'.\n"
+                            f"Section: '{section_heading}'\n"
+                            f"Surrounding text: {context_text[:300]}\n"
+                            f"Provide a concise, 1-2 sentence description explaining what settings, buttons, or UI steps "
+                            f"are shown in this screenshot."
+                        )
+                        payload = {
+                            "contents": [{
+                                "parts": [
+                                    {"inlineData": {"mimeType": content_type, "data": b64_data}},
+                                    {"text": prompt}
+                                ]
+                            }],
+                            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 200}
+                        }
+                        async with httpx.AsyncClient(timeout=15.0) as http_client:
+                            res = await http_client.post(url, json=payload)
+                            if res.status_code == 200:
+                                data = res.json()
+                                candidates = data.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    if parts:
+                                        caption = parts[0].get("text", "").strip()
+                                        visual_verified = True
+                                        visual_status = "verified"
+                    except Exception as e:
+                        logger.info(f"Gemini Vision analysis failed: {e}")
+
+        if not visual_verified and self.client and image_url.startswith("http"):
             img_data = await self._fetch_image_bytes(image_url)
             if img_data:
                 content, content_type = img_data

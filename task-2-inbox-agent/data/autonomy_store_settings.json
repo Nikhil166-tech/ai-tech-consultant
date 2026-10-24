@@ -1,0 +1,7 @@
+{
+  "defaultThreshold": 3,
+  "emergencyStop": false,
+  "requireGmailConnection": false,
+  "minEvidenceScore": 0.4,
+  "updatedAt": "2026-10-23T11:02:35.893Z"
+}

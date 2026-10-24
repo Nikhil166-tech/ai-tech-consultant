@@ -1,4 +1,4 @@
-﻿import {
+import {
   CustomerEmail,
   ProcessingResult,
   HumanReviewRecord,
@@ -13,12 +13,14 @@ import { DraftGenerator } from "./drafting/generator.js";
 import { AutonomyEngine } from "./autonomy/engine.js";
 import { FeedbackStore } from "./feedback/store.js";
 import { InteractionStore } from "./storage/interaction_store.js";
+import { GmailClient } from "./gmail/client.js";
 
 export interface ReviewSubmission {
   action: ReviewAction;
   reviewerId: string;
   finalReply?: string;
   notes?: string;
+  sendViaGmail?: boolean;
 }
 
 export class InboxService {
@@ -28,6 +30,7 @@ export class InboxService {
   public readonly autonomyEngine: AutonomyEngine;
   public readonly feedbackStore: FeedbackStore;
   public readonly interactionStore: InteractionStore;
+  public readonly gmailClient: GmailClient;
 
   constructor(options?: {
     knowledgeClient?: Task1KnowledgeClient;
@@ -36,6 +39,7 @@ export class InboxService {
     interactionStore?: InteractionStore;
     allowDeterministicAutoSend?: boolean;
     draftGenerator?: DraftGenerator;
+    gmailClient?: GmailClient;
   }) {
     this.classifier = new EmailClassifier();
     this.knowledgeClient = options?.knowledgeClient || new Task1KnowledgeClient();
@@ -43,6 +47,7 @@ export class InboxService {
     this.interactionStore = options?.interactionStore || new InteractionStore();
     this.draftGenerator = options?.draftGenerator || new DraftGenerator({ feedbackStore: this.feedbackStore, allowDeterministicAutoSend: options?.allowDeterministicAutoSend });
     this.autonomyEngine = options?.autonomyEngine || new AutonomyEngine();
+    this.gmailClient = options?.gmailClient || new GmailClient();
   }
 
   public async processEmail(
@@ -88,11 +93,19 @@ export class InboxService {
     const draft = await this.draftGenerator.generateDraft(email, classification, knowledgeResponse, version);
 
     // 5. Autonomy Policy Gating
-    const canAuto = this.autonomyEngine.canAutoSend(kind) && draft.autoSendEligible;
+    const canAuto =
+      this.autonomyEngine.canAutoSend(kind, classification.labelKey, {
+        isGmailConnected: this.gmailClient.isConnected(),
+        evidenceScore: knowledgeResponse?.evidence_score,
+        hasEvidence: Boolean(knowledgeResponse?.is_known && knowledgeResponse?.evidence_status !== "NONE")
+      }) && draft.autoSendEligible;
+
     const currentAutonomyState = this.autonomyEngine.getState(kind.key);
+    const currentLabelState = this.autonomyEngine.getLabelState(classification.labelKey);
 
     let routedTo: "AUTO_SENT" | "HUMAN_REVIEW_QUEUE" = "HUMAN_REVIEW_QUEUE";
     let finalSentReply: string | undefined;
+    let gmailMessageId: string | undefined;
 
     const interactionId = draft.id;
     const now = new Date().toISOString();
@@ -101,21 +114,42 @@ export class InboxService {
       routedTo = "AUTO_SENT";
       finalSentReply = draft.body;
 
-      // CRITICAL: An automatic send is recorded into auto-delivery store.
-      // It NEVER creates a human review record and NEVER increments unchanged streak.
-      const deliveryRecord: AutomaticDeliveryRecord = {
-        id: `auto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        interactionId,
-        emailId: email.id,
-        draftId: draft.id,
-        kindKey: kind.key,
-        sentReply: draft.body,
-        sentAt: now,
-        promptVersion: version
-      };
+      // Send via Gmail if connected
+      if (this.gmailClient.isConnected()) {
+        try {
+          const sendRes = await this.gmailClient.sendEmail({
+            to: email.senderEmail,
+            subject: draft.subject,
+            body: draft.body,
+            inReplyTo: email.id
+          });
+          gmailMessageId = sendRes.messageId;
+        } catch (sendErr) {
+          console.warn("[AUTO-SEND GMAIL] API send failed, routing to review queue:", sendErr);
+          routedTo = "HUMAN_REVIEW_QUEUE";
+          finalSentReply = undefined;
+        }
+      }
 
-      this.interactionStore.recordAutoDelivery(deliveryRecord);
-      this.autonomyEngine.recordAutoDelivery(deliveryRecord);
+      if (routedTo === "AUTO_SENT") {
+        // CRITICAL: An automatic send is recorded into auto-delivery store.
+        // It NEVER creates a human review record and NEVER increments unchanged streak.
+        const deliveryRecord: AutomaticDeliveryRecord = {
+          id: `auto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          interactionId,
+          emailId: email.id,
+          draftId: draft.id,
+          kindKey: kind.key,
+          labelKey: classification.labelKey,
+          sentReply: draft.body,
+          sentAt: now,
+          promptVersion: version,
+          gmailMessageId
+        };
+
+        this.interactionStore.recordAutoDelivery(deliveryRecord);
+        this.autonomyEngine.recordAutoDelivery(deliveryRecord);
+      }
     }
 
     // 6. Persist complete interaction record
@@ -136,6 +170,7 @@ export class InboxService {
       routingDecision: routedTo,
       status: routedTo === "AUTO_SENT" ? "AUTO_SENT" : "PENDING_REVIEW",
       finalSentReply,
+      gmailMessageId,
       createdAt: now,
       updatedAt: now
     };
@@ -149,8 +184,10 @@ export class InboxService {
       draft,
       routedTo,
       autonomyState: currentAutonomyState,
+      labelAutonomyState: currentLabelState,
       interactionId,
-      finalSentReply
+      finalSentReply,
+      gmailMessageId
     };
   }
 
@@ -214,6 +251,9 @@ export class InboxService {
       emailId: interaction.email.id,
       draftId: interaction.draft.id,
       kindKey: interaction.classification.kind.key,
+      parentSettingType: interaction.classification.parentSettingType,
+      specificLabel: interaction.classification.specificLabel,
+      labelKey: interaction.classification.labelKey,
       action: submission.action,
       originalDraft: interaction.draft.body,
       finalSentReply,
@@ -224,7 +264,7 @@ export class InboxService {
       notes: submission.notes
     };
 
-    // 4. Update Autonomy Engine with human review action
+    // 4. Update Autonomy Engine with human review action (updates both kind and label streaks)
     this.autonomyEngine.recordHumanReview(reviewRecord);
 
     // 5. Update Feedback Store for continuous learning
@@ -251,6 +291,74 @@ export class InboxService {
     interaction.reviewNotes = submission.notes;
 
     return { interaction, reviewRecord };
+  }
+
+  public async sendApprovedEmailViaGmail(
+    interactionId: string
+  ): Promise<{ success: boolean; messageId: string; threadId: string }> {
+    const interaction = this.interactionStore.getInteraction(interactionId);
+    if (!interaction) {
+      throw new Error(`Interaction '${interactionId}' not found`);
+    }
+    if (!interaction.finalSentReply) {
+      throw new Error(`Interaction '${interactionId}' has no approved reply to send`);
+    }
+    if (!this.gmailClient.isConnected()) {
+      throw new Error("Gmail is not connected. Connect via OAuth before sending.");
+    }
+
+    const sendRes = await this.gmailClient.sendEmail({
+      to: interaction.email.senderEmail,
+      subject: interaction.draft.subject,
+      body: interaction.finalSentReply,
+      inReplyTo: interaction.email.id
+    });
+
+    interaction.gmailMessageId = sendRes.messageId;
+    this.interactionStore.saveInteraction(interaction);
+    return sendRes;
+  }
+
+  /**
+   * Fetches unread messages from connected Gmail account and processes each exactly once.
+   */
+  public async syncGmail(maxCount: number = 20): Promise<{ fetched: number; processed: number; items: ProcessingResult[] }> {
+    if (!this.gmailClient.isConnected()) {
+      return { fetched: 0, processed: 0, items: [] };
+    }
+
+    const list = await this.gmailClient.listInboxMessages(maxCount);
+    const results: ProcessingResult[] = [];
+
+    for (const item of list) {
+      if (this.gmailClient.isMessageProcessed(item.id)) {
+        continue;
+      }
+
+      try {
+        const full = await this.gmailClient.getMessage(item.id);
+        const email: CustomerEmail = {
+          id: full.id,
+          senderEmail: full.sender.includes("<") ? full.sender.split("<")[1].replace(">", "").trim() : full.sender,
+          senderName: full.sender.includes("<") ? full.sender.split("<")[0].replace(/"/g, "").trim() : undefined,
+          subject: full.subject,
+          body: full.bodyText,
+          receivedAt: full.date
+        };
+
+        const res = await this.processEmail(email, "v2_feedback_enhanced");
+        this.gmailClient.markMessageProcessed(item.id);
+        results.push(res);
+      } catch (err) {
+        console.warn(`Failed to process Gmail message ${item.id}:`, err);
+      }
+    }
+
+    return {
+      fetched: list.length,
+      processed: results.length,
+      items: results
+    };
   }
 
   public revokeAutonomy(kindKey: string, reason: string, revokedBy?: string) {

@@ -1,4 +1,4 @@
-﻿export enum Intent {
+export enum Intent {
   HOW_TO_CONFIGURE = "HOW_TO_CONFIGURE",
   FEATURE_INQUIRY = "FEATURE_INQUIRY",
   BILLING_ISSUE = "BILLING_ISSUE",
@@ -56,6 +56,9 @@ export interface EmailClassification {
   reasoning: string;
   requiresHumanReview: boolean;
   riskFlags: string[];
+  parentSettingType: string;
+  specificLabel: string;
+  labelKey: string; // e.g. "Design Settings -> Header"
 }
 
 export interface Task1Citation {
@@ -107,6 +110,9 @@ export interface HumanReviewRecord {
   emailId: string;
   draftId: string;
   kindKey: string;
+  parentSettingType?: string;
+  specificLabel?: string;
+  labelKey?: string;
   action: ReviewAction;
   originalDraft: string;
   finalSentReply?: string; // undefined if REJECT
@@ -123,9 +129,11 @@ export interface AutomaticDeliveryRecord {
   emailId: string;
   draftId: string;
   kindKey: string;
+  labelKey?: string;
   sentReply: string;
   sentAt: string;
   promptVersion: "v1_baseline" | "v2_feedback_enhanced";
+  gmailMessageId?: string;
 }
 
 export type InteractionStatus = "PENDING_REVIEW" | "AUTO_SENT" | "APPROVED" | "EDITED" | "REJECTED";
@@ -151,6 +159,8 @@ export interface InteractionRecord {
   reviewerId?: string;
   reviewedAt?: string;
   reviewNotes?: string;
+  gmailMessageId?: string;
+  gmailThreadId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -167,6 +177,64 @@ export interface AutonomyState {
   updatedAt: string;
 }
 
+export interface LabelAutonomyState {
+  labelKey: string; // e.g. "Design Settings -> Header"
+  parentSettingType: string;
+  specificLabel: string;
+  unchangedStreak: number;
+  requiredThreshold: number; // Configurable threshold X, default 3
+  autonomyEnabled: boolean;
+  disabledByUser: boolean;
+  totalDrafts: number;
+  totalSentWithoutChanges: number;
+  lastFailureReason?: string;
+  updatedAt: string;
+}
+
+export interface AutonomyGlobalSettings {
+  defaultThreshold: number;
+  emergencyStop: boolean;
+  requireGmailConnection: boolean;
+  minEvidenceScore: number;
+  updatedAt: string;
+}
+
+export interface TaxonomyItem {
+  id: string;
+  parentSettingType: string;
+  specificLabel: string;
+  description: string;
+  keywords: string[];
+  synonyms: string[];
+  enabled: boolean;
+}
+
+export interface GmailAccountStatus {
+  isConnected: boolean;
+  email?: string;
+  name?: string;
+  tokenExpiry?: string;
+  lastSyncAt?: string;
+  scopes?: string[];
+  isMock?: boolean;
+}
+
+export interface GmailMessageRecord {
+  id: string;
+  threadId: string;
+  snippet: string;
+  subject: string;
+  sender: string;
+  recipient: string;
+  bodyText: string;
+  date: string;
+  labels: string[];
+  inReplyTo?: string;
+  references?: string;
+  processed?: boolean;
+  interactionId?: string;
+}
+
 export interface AutonomyRevocationRequest {
   kindKey: string;
   reason: string;
@@ -180,6 +248,8 @@ export interface ProcessingResult {
   draft: DraftReply;
   routedTo: "AUTO_SENT" | "HUMAN_REVIEW_QUEUE";
   autonomyState: AutonomyState;
+  labelAutonomyState?: LabelAutonomyState;
   interactionId: string;
   finalSentReply?: string;
+  gmailMessageId?: string;
 }
