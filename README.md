@@ -24,14 +24,14 @@ graph TD
 ## Startup Options
 
 ### Option 1: One-Command Docker Startup
-Start all three services across the container network with automated database bootstrapping and persistent volumes:
+Start all services across the container network with automated database bootstrapping:
 
 ```bash
 docker compose up --build
 ```
 
 ### Option 2: Local Native Startup (Without Docker)
-Start each service directly in its own terminal window:
+Start each service in its own terminal:
 
 ```bash
 # Terminal 1: Task 1 Knowledge Brain (Port 8000)
@@ -45,16 +45,31 @@ npm run dev
 # Terminal 3: Task 3 Meeting-to-Scope (Port 8002)
 cd task-3-meeting-sow
 python -m uvicorn app.server:app --port 8002 --reload
+
+# Terminal 4: Frontend Unified Dashboard (Port 5173)
+cd frontend
+npm run dev
 ```
 
-> **Deployment Verification**: Clean multi-container startup has been verified with `docker compose down -v` followed by `docker compose up --build`. Task 1 (`task1-knowledge-brain`) became healthy within its FastEmbed cold-start healthcheck window, `task1-bootstrap` completed successfully (`added=25`, 25 articles, 31 chunks) and exited with code 0, Task 2 (`task2-inbox-agent`) started successfully on port 3000, Task 3 (`task3-meeting-sow`) started successfully on port 8002, and `/health` returned healthy for all three services. All services also run smoothly in native local mode without Docker.
-
-### Service Ports & Demo Entry Points
+### Service Ports & Evaluator Entry Points
 | Service | Container Port | Host URL | Key Endpoints / UI |
 | :--- | :---: | :---: | :--- |
+| **Unified Consultant Frontend** | `5173` | `http://localhost:5173` | Interactive Dashboard, Knowledge Chat, Inbox HITL, SoW Builder |
 | **Task 1: Knowledge Brain** | `8000` | `http://localhost:8000` | Swagger: `/docs`<br>Health: `/health`<br>Query: `POST /api/v1/ask`<br>Sync: `POST /api/v1/sync` |
 | **Task 2: Inbox Agent** | `3000` | `http://localhost:3000` | HITL Review UI: `GET /review`<br>Process Email: `POST /api/v1/emails/process`<br>Pending Queue: `GET /api/v1/inbox/pending` |
 | **Task 3: Meeting-to-Scope** | `8002` | `http://localhost:8002` | Swagger: `/docs`<br>Initial Meeting: `POST /api/v1/projects/from-meeting`<br>Follow-up Meeting: `POST /api/v1/projects/{id}/follow-up` |
+
+### Evaluator Quickstart
+1. **Configure Environment**: Copy `.env.example` to `.env` in the root folder:
+   ```bash
+   cp .env.example .env
+   ```
+   Add your `ANTHROPIC_API_KEY` and/or `GEMINI_API_KEY`. (If omitted, deterministic fallback engines still operate).
+2. **Launch Services**: Run `docker compose up --build` or launch natively using the 4 terminal commands above.
+3. **Open Dashboard**: Navigate to `http://localhost:5173`.
+   - Pre-configured Demo Login: `demo.consultant@brilliantdirectories.com`
+   - Password: `DemoPassword123!`
+
 
 ---
 
