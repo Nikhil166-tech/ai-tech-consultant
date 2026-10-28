@@ -268,3 +268,51 @@ def test_proposal_writer_defaults_to_not_client_ready():
     sow = writer.generate_sow(scope)
     assert "NOT CLIENT-READY" in sow
     assert "PENDING HUMAN APPROVAL" in sow
+
+
+@pytest.mark.asyncio
+async def test_requirements_analyst_model_fallback_to_next_latest_model():
+    """
+    Verifies that when primary Gemini model fails (404/429/etc.),
+    the agent automatically cascades to the next latest model.
+    """
+    analyst = RequirementsAnalystAgent(api_key="mock_key")
+
+    attempted_urls = []
+
+    def mock_post_handler(url, **kwargs):
+        attempted_urls.append(url)
+        mock_resp = AsyncMock()
+        if len(attempted_urls) == 1:
+            # First attempt fails with 404
+            mock_resp.status_code = 404
+            mock_resp.text = '{"error": {"code": 404, "message": "Model not found"}}'
+            return mock_resp
+        else:
+            # Second attempt (next latest model) succeeds
+            mock_resp.status_code = 200
+            mock_resp.json = lambda: {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": (
+                                '{\n'
+                                '  "client_goal": "Setup directory payment system",\n'
+                                '  "requirements": [{"title": "Stripe Gateway", "description": "Process payments", "category": "FINANCE"}],\n'
+                                '  "assumptions": [], "open_questions": [], "risks": [], "out_of_scope": []\n'
+                                '}'
+                            )
+                        }]
+                    }
+                }]
+            }
+            return mock_resp
+
+    with patch("os.getenv", side_effect=lambda k, d=None: "mock_gemini_key" if k == "GEMINI_API_KEY" else d):
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=mock_post_handler):
+            result = await analyst.analyze_transcript("Client wants Stripe payment processing.")
+
+            assert len(attempted_urls) >= 2, "Should attempt primary and fallback latest models"
+            assert result["client_goal"] == "Setup directory payment system"
+            assert len(result["requirements"]) == 1
+            assert result["requirements"][0].title == "Stripe Gateway"

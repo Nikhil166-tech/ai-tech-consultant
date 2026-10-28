@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { InteractionRecord, CustomerEmail } from "../types";
+import { api } from "../api";
 import {
   Inbox,
   Send,
@@ -14,7 +15,11 @@ import {
   Clock,
   Sparkles,
   Paperclip,
-  Check
+  Check,
+  Trash2,
+  RotateCcw,
+  ShieldAlert,
+  Trash
 } from "lucide-react";
 
 interface GmailInboxViewProps {
@@ -27,6 +32,7 @@ interface GmailInboxViewProps {
     sendViaGmail?: boolean
   ) => Promise<void>;
   onSendViaGmail: (interactionId: string) => Promise<void>;
+  onRefreshInbox?: () => void;
   isGmailConnected: boolean;
   filterLabel?: string;
 }
@@ -35,13 +41,14 @@ export const GmailInboxView: React.FC<GmailInboxViewProps> = ({
   interactions,
   onReview,
   onSendViaGmail,
+  onRefreshInbox,
   isGmailConnected,
   filterLabel
 }) => {
   const [selectedInteractionId, setSelectedInteractionId] = useState<string | null>(
     interactions[0]?.id || null
   );
-  const [activeTab, setActiveTab] = useState<"inbox" | "sent" | "drafts">("inbox");
+  const [activeTab, setActiveTab] = useState<"inbox" | "sent" | "drafts" | "spam" | "trash">("inbox");
   const [selectedLabel, setSelectedLabel] = useState<string>(filterLabel || "ALL");
   const [search, setSearch] = useState("");
   const [editedBody, setEditedBody] = useState<string>("");
@@ -50,41 +57,112 @@ export const GmailInboxView: React.FC<GmailInboxViewProps> = ({
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
 
-  const selectedInteraction = interactions.find((i) => i.id === selectedInteractionId) || interactions[0];
-
   // Filtering
-  const filteredInteractions = interactions.filter((item) => {
-    // Tab filter
-    if (activeTab === "inbox" && item.status !== "PENDING_REVIEW") {
-      // Show pending in inbox, or all
-    }
-    if (activeTab === "sent" && item.status !== "APPROVED" && item.status !== "AUTO_SENT" && item.status !== "EDITED") {
-      return false;
-    }
-    // Label filter
-    if (selectedLabel !== "ALL") {
-      if (
-        item.classification?.parentSettingType !== selectedLabel &&
-        item.classification?.specificLabel !== selectedLabel
-      ) {
+  const filteredInteractions = interactions
+    .filter((item) => {
+      // 1. Trash tab: only show items marked as TRASH
+      if (activeTab === "trash") {
+        return item.folder === "TRASH";
+      }
+      if (item.folder === "TRASH") {
         return false;
       }
-    }
-    // Search query
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const matchSubject = item.email.subject.toLowerCase().includes(q);
-      const matchSender = item.email.senderEmail.toLowerCase().includes(q);
-      const matchBody = item.email.body.toLowerCase().includes(q);
-      if (!matchSubject && !matchSender && !matchBody) return false;
-    }
-    return true;
-  });
+
+      // 2. Spam tab: only show items marked as SPAM
+      if (activeTab === "spam") {
+        return item.folder === "SPAM";
+      }
+      if (item.folder === "SPAM") {
+        return false;
+      }
+
+      // 3. Drafts tab
+      if (activeTab === "drafts") {
+        return item.folder === "DRAFTS" || (!item.folder && item.status === "PENDING_REVIEW");
+      }
+
+      // 4. Sent tab
+      if (activeTab === "sent") {
+        return (
+          item.folder === "SENT" ||
+          (!item.folder && (item.status === "APPROVED" || item.status === "AUTO_SENT" || item.status === "EDITED"))
+        );
+      }
+
+      // 5. Inbox tab (default active messages)
+      if (activeTab === "inbox") {
+        return item.folder === "INBOX" || !item.folder;
+      }
+
+      return true;
+    })
+    .filter((item) => {
+      // Label filter
+      if (selectedLabel !== "ALL") {
+        if (
+          item.classification?.parentSettingType !== selectedLabel &&
+          item.classification?.specificLabel !== selectedLabel
+        ) {
+          return false;
+        }
+      }
+      // Search query
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const matchSubject = item.email.subject.toLowerCase().includes(q);
+        const matchSender = item.email.senderEmail.toLowerCase().includes(q);
+        const matchBody = item.email.body.toLowerCase().includes(q);
+        if (!matchSubject && !matchSender && !matchBody) return false;
+      }
+      return true;
+    });
+
+  const selectedInteraction =
+    filteredInteractions.find((i) => i.id === selectedInteractionId) || filteredInteractions[0] || null;
 
   const handleSelect = (item: InteractionRecord) => {
     setSelectedInteractionId(item.id);
     setEditedBody(item.draft.body);
     setIsEditing(false);
+  };
+
+  const handleTrash = async (id: string) => {
+    try {
+      await api.moveToTrash(id);
+      if (onRefreshInbox) onRefreshInbox();
+    } catch (err: any) {
+      alert("Failed to move to trash: " + err.message);
+    }
+  };
+
+  const handleRestore = async (id: string) => {
+    try {
+      await api.restoreFromTrash(id);
+      if (onRefreshInbox) onRefreshInbox();
+    } catch (err: any) {
+      alert("Failed to restore: " + err.message);
+    }
+  };
+
+  const handleToggleSpam = async (id: string) => {
+    try {
+      await api.toggleSpam(id);
+      if (onRefreshInbox) onRefreshInbox();
+    } catch (err: any) {
+      alert("Failed to update spam status: " + err.message);
+    }
+  };
+
+  const handleDeleteForever = async (id: string) => {
+    if (!window.confirm("Are you sure you want to permanently delete this email? This action cannot be undone.")) {
+      return;
+    }
+    try {
+      await api.deleteForever(id);
+      if (onRefreshInbox) onRefreshInbox();
+    } catch (err: any) {
+      alert("Failed to delete forever: " + err.message);
+    }
   };
 
   const handleApprove = async (sendViaGmail: boolean = false) => {
@@ -148,9 +226,25 @@ export const GmailInboxView: React.FC<GmailInboxViewProps> = ({
                 <span>Inbox</span>
               </div>
               <span className="text-[10px] bg-sky-950 text-sky-400 px-1.5 py-0.5 rounded-full font-bold">
-                {interactions.filter((i) => i.status === "PENDING_REVIEW").length}
+                {interactions.filter((i) => i.folder !== "TRASH" && i.folder !== "SPAM" && (i.folder === "INBOX" || !i.folder)).length}
               </span>
             </button>
+
+            <button
+              onClick={() => setActiveTab("drafts")}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium ${
+                activeTab === "drafts" ? "bg-slate-800 text-sky-400 font-semibold" : "text-slate-400 hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <FileText className="w-3.5 h-3.5" />
+                <span>Drafts</span>
+              </div>
+              <span className="text-[10px] text-slate-500">
+                {interactions.filter((i) => i.folder !== "TRASH" && (i.folder === "DRAFTS" || (!i.folder && i.status === "PENDING_REVIEW"))).length}
+              </span>
+            </button>
+
             <button
               onClick={() => setActiveTab("sent")}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium ${
@@ -162,19 +256,38 @@ export const GmailInboxView: React.FC<GmailInboxViewProps> = ({
                 <span>Sent</span>
               </div>
               <span className="text-[10px] text-slate-500">
-                {interactions.filter((i) => i.status === "APPROVED" || i.status === "AUTO_SENT" || i.status === "EDITED").length}
+                {interactions.filter((i) => i.folder !== "TRASH" && (i.folder === "SENT" || (!i.folder && (i.status === "APPROVED" || i.status === "AUTO_SENT" || i.status === "EDITED")))).length}
               </span>
             </button>
+
             <button
-              onClick={() => setActiveTab("drafts")}
+              onClick={() => setActiveTab("spam")}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium ${
-                activeTab === "drafts" ? "bg-slate-800 text-sky-400 font-semibold" : "text-slate-400 hover:bg-slate-800/40"
+                activeTab === "spam" ? "bg-slate-800 text-amber-400 font-semibold" : "text-slate-400 hover:bg-slate-800/40"
               }`}
             >
               <div className="flex items-center gap-2">
-                <FileText className="w-3.5 h-3.5" />
-                <span>Drafts</span>
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>Spam</span>
               </div>
+              <span className="text-[10px] text-slate-500">
+                {interactions.filter((i) => i.folder === "SPAM").length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("trash")}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium ${
+                activeTab === "trash" ? "bg-slate-800 text-rose-400 font-semibold" : "text-slate-400 hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Trash</span>
+              </div>
+              <span className="text-[10px] text-slate-500">
+                {interactions.filter((i) => i.folder === "TRASH").length}
+              </span>
             </button>
           </div>
 
@@ -322,13 +435,59 @@ export const GmailInboxView: React.FC<GmailInboxViewProps> = ({
                 </div>
               </div>
 
-              {/* Taxonomy / Auto-send status card */}
-              <div className="flex items-center gap-2 text-xs bg-slate-950/70 border border-slate-800 px-3 py-1.5 rounded-lg">
-                <Tag className="w-3.5 h-3.5 text-sky-400" />
-                <span className="text-slate-300 font-medium">
-                  {selectedInteraction.classification?.parentSettingType} →{" "}
-                  <span className="text-sky-300">{selectedInteraction.classification?.specificLabel}</span>
-                </span>
+              <div className="flex items-center gap-2">
+                {/* Taxonomy card */}
+                <div className="flex items-center gap-2 text-xs bg-slate-950/70 border border-slate-800 px-3 py-1.5 rounded-lg">
+                  <Tag className="w-3.5 h-3.5 text-sky-400" />
+                  <span className="text-slate-300 font-medium">
+                    {selectedInteraction.classification?.parentSettingType} →{" "}
+                    <span className="text-sky-300">{selectedInteraction.classification?.specificLabel}</span>
+                  </span>
+                </div>
+
+                {/* Folder Action Controls */}
+                {selectedInteraction.folder === "TRASH" ? (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleRestore(selectedInteraction.id)}
+                      title="Restore from Trash to Inbox"
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs flex items-center gap-1 font-semibold border border-slate-700 transition"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Restore</span>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteForever(selectedInteraction.id)}
+                      title="Permanently Delete"
+                      className="px-2.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 text-xs flex items-center gap-1 font-semibold border border-rose-500/40 transition"
+                    >
+                      <Trash className="w-3.5 h-3.5" />
+                      <span>Delete Forever</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleToggleSpam(selectedInteraction.id)}
+                      title={selectedInteraction.folder === "SPAM" ? "Unmark Spam" : "Mark as Spam"}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1 font-medium border transition ${
+                        selectedInteraction.folder === "SPAM"
+                          ? "bg-amber-500/20 text-amber-400 border-amber-500/40"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                      <span>{selectedInteraction.folder === "SPAM" ? "Unmark Spam" : "Spam"}</span>
+                    </button>
+                    <button
+                      onClick={() => handleTrash(selectedInteraction.id)}
+                      title="Move to Trash"
+                      className="p-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-400 hover:text-rose-400 hover:border-rose-900/50 transition"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 

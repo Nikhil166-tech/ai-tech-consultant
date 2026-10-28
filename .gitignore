@@ -19,4 +19,6 @@ task-3-meeting-sow/data/*.json
 
 *.zip
 *gmail_tokens.json
+backups/
+*.bak
 

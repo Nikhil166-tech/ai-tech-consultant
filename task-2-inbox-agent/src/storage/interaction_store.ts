@@ -1,4 +1,4 @@
-﻿import fs from "fs";
+import fs from "fs";
 import path from "path";
 import { InteractionRecord, AutomaticDeliveryRecord, InteractionStatus } from "../types/index.js";
 
@@ -55,6 +55,23 @@ export class InteractionStore {
 
     this.persistInteractions();
     return existing;
+  }
+
+  public moveToFolder(id: string, folder: import("../types/index.js").EmailFolder): InteractionRecord | undefined {
+    const existing = this.interactions.get(id);
+    if (!existing) return undefined;
+    existing.folder = folder;
+    existing.updatedAt = new Date().toISOString();
+    this.persistInteractions();
+    return existing;
+  }
+
+  public deleteInteraction(id: string): boolean {
+    const deleted = this.interactions.delete(id);
+    if (deleted) {
+      this.persistInteractions();
+    }
+    return deleted;
   }
 
   public recordAutoDelivery(record: AutomaticDeliveryRecord): void {

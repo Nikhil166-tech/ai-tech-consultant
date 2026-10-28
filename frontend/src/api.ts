@@ -10,17 +10,37 @@ import {
   LabelAutonomyState,
   TaxonomyItem,
   GmailAccountStatus,
-  CustomerEmail
+  CustomerEmail,
+  AIModelStatusResponse,
+  ProjectScope,
+  ScopeChangeSet
 } from "./types";
 
+function getCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(new RegExp("(^|;\\s*)csrf_token=([^;]*)"));
+  return match ? decodeURIComponent(match[2]) : null;
+}
+
 async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const method = (options.method || "GET").toUpperCase();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((options.headers as Record<string, string>) || {})
+  };
+
+  // Attach CSRF protection header for state-changing requests
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    const csrfToken = getCsrfToken();
+    if (csrfToken && !headers["X-CSRF-Token"]) {
+      headers["X-CSRF-Token"] = csrfToken;
+    }
+  }
+
   const res = await fetch(url, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    credentials: "omit"
+    headers,
+    credentials: "include"
   });
 
   if (!res.ok) {
@@ -31,6 +51,12 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
     } catch {
       // ignore
     }
+
+    // Auto-dispatch event on session expiration or unauthenticated access (excluding initial /me check)
+    if (res.status === 401 && !url.includes("/api/v1/auth/me") && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("auth:unauthorized", { detail: { url, status: 401 } }));
+    }
+
     throw new Error(errorMsg);
   }
 
@@ -50,6 +76,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password })
     }),
+  demoLogin: () => fetchJson<{ user: User }>("/api/v1/auth/demo-login", { method: "POST" }),
   logout: () => fetchJson<{ success: boolean }>("/api/v1/auth/logout", { method: "POST" }),
 
   // Sitemaps
@@ -69,24 +96,82 @@ export const api = {
       method: "POST"
     }),
   getIndexingEstimate: () => fetchJson<IndexingEstimate>("/api/v1/sitemaps/estimate"),
+  updateSitemapSchedule: (sitemap_id: string, interval_days?: number, status?: string) =>
+    fetchJson<SitemapItem>(`/api/v1/sitemaps/${sitemap_id}/schedule`, {
+      method: "PUT",
+      body: JSON.stringify({ refresh_interval_days: interval_days, schedule_status: status })
+    }),
+  getSchedulerStatus: () => fetchJson<SchedulerStatus>("/api/v1/scheduler/status"),
+  triggerRefreshNow: (sitemap_id: string, force: boolean = false) =>
+    fetchJson<RefreshRunSummary>(`/api/v1/sitemaps/${sitemap_id}/refresh-now?force=${force}`, {
+      method: "POST"
+    }),
 
   // Refresh Runs
   listRefreshRuns: (sitemap_id?: string) =>
     fetchJson<RefreshRunSummary[]>(`/api/v1/refresh-runs${sitemap_id ? `?sitemap_id=${sitemap_id}` : ""}`),
-  getRefreshRunDetail: (run_id: string) =>
-    fetchJson<{ summary: RefreshRunSummary; urls: RefreshRunUrlItem[] }>(`/api/v1/refresh-runs/${run_id}`),
+  getRefreshRunDetail: (run_id: string, search?: string, status?: string, limit: number = 200, offset: number = 0) => {
+    const params = new URLSearchParams();
+    if (search) params.append("search", search);
+    if (status) params.append("status", status);
+    params.append("limit", limit.toString());
+    params.append("offset", offset.toString());
+    return fetchJson<{ summary: RefreshRunSummary; urls: RefreshRunUrlItem[] }>(`/api/v1/refresh-runs/${run_id}?${params.toString()}`);
+  },
   triggerRefreshRun: (sitemap_id: string) =>
     fetchJson<RefreshRunSummary>(`/api/v1/sitemaps/${sitemap_id}/trigger-refresh`, {
       method: "POST"
     }),
 
-  // Quarantine
+  // URL Health & Actions
+  listHealthObservations: (params?: { status?: string; search?: string; limit?: number; offset?: number; sitemap_id?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.append("status", params.status);
+    if (params?.search) query.append("search", params.search);
+    if (params?.limit) query.append("limit", params.limit.toString());
+    if (params?.offset) query.append("offset", params.offset.toString());
+    if (params?.sitemap_id) query.append("sitemap_id", params.sitemap_id);
+    return fetchJson<URLHealthStatus[]>(`/api/v1/health-observations?${query.toString()}`);
+  },
+  cancelPendingHealthAction: (url: string) =>
+    fetchJson<any>("/api/v1/health-observations/cancel-pending", {
+      method: "POST",
+      body: JSON.stringify({ url })
+    }),
+  reverifyUrl: (url: string) =>
+    fetchJson<URLHealthStatus>(`/api/v1/health-observations/${encodeURIComponent(url)}/reverify`, {
+      method: "POST"
+    }),
+
+  // Quarantine & Archive
   listQuarantinedArticles: () => fetchJson<QuarantineRecord[]>("/api/v1/quarantine"),
   restoreQuarantinedArticle: (article_id: string) =>
     fetchJson<{ success: boolean; article_id: string }>(`/api/v1/quarantine/${article_id}/restore`, {
       method: "POST"
     }),
-  listHealthObservations: () => fetchJson<any[]>("/api/v1/health-observations"),
+  listArchivedArticles: (params?: { search?: string; reason?: string; limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.search) query.append("search", params.search);
+    if (params?.reason) query.append("reason", params.reason);
+    if (params?.limit) query.append("limit", params.limit.toString());
+    if (params?.offset) query.append("offset", params.offset.toString());
+    return fetchJson<ArchivedArticleItem[]>(`/api/v1/archive?${query.toString()}`);
+  },
+  getArchivedArticleDetail: (id: string) => fetchJson<ArchivedArticleDetail>(`/api/v1/archive/${id}`),
+  restoreArchivedArticle: (id: string) =>
+    fetchJson<{ status: string; message: string }>(`/api/v1/archive/${id}/restore`, {
+      method: "POST"
+    }),
+  updateArchiveRetention: (id: string, preset: string, days?: number) =>
+    fetchJson<any>(`/api/v1/archive/${id}/retention`, {
+      method: "PUT",
+      body: JSON.stringify({ retention_preset: preset, retention_days: days })
+    }),
+
+  // Redirects & History
+  listRedirects: () => fetchJson<ArticleRedirectItem[]>("/api/v1/redirects"),
+  getArticleHistory: (url: string) => fetchJson<ArticleHistoryItem[]>(`/api/v1/articles/${encodeURIComponent(url)}/history`),
+  getArticleHistoryDiff: (v1: string, v2: string) => fetchJson<any>(`/api/v1/article-history/diff?v1=${v1}&v2=${v2}`),
 
   // Settings
   getUserSettings: () => fetchJson<any>("/api/v1/settings"),
@@ -200,5 +285,63 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ apiKey, model })
       }
-    )
+    ),
+
+  // Step 4: AI Model Routing & Diagnostics
+  getAIModelStatus: () => fetchJson<AIModelStatusResponse>("/api/v1/ai/models/status"),
+
+  // Inbox Folder Actions & Real Compose
+  moveToTrash: (id: string) =>
+    fetchJson<{ success: boolean; folder: string; interaction: InteractionRecord }>(`/api/v1/inbox/${id}/trash`, {
+      method: "POST"
+    }),
+  restoreFromTrash: (id: string) =>
+    fetchJson<{ success: boolean; folder: string; interaction: InteractionRecord }>(`/api/v1/inbox/${id}/restore`, {
+      method: "POST"
+    }),
+  toggleSpam: (id: string) =>
+    fetchJson<{ success: boolean; folder: string; interaction: InteractionRecord }>(`/api/v1/inbox/${id}/spam`, {
+      method: "POST"
+    }),
+  deleteForever: (id: string) =>
+    fetchJson<{ success: boolean; message: string }>(`/api/v1/inbox/${id}/forever`, {
+      method: "DELETE"
+    }),
+  composeMessage: (data: { to: string; subject: string; body: string; saveDraft?: boolean; sendViaGmail?: boolean }) =>
+    fetchJson<{ success: boolean; isDraft: boolean; folder: string; interaction: InteractionRecord }>(
+      "/api/v1/inbox/compose",
+      {
+        method: "POST",
+        body: JSON.stringify(data)
+      }
+    ),
+
+  // Task 3: Meeting-to-SOW Agent
+  listSOWProjects: () => fetchJson<ProjectScope[]>("/api/v1/projects"),
+  createSOWFromMeeting: (transcript: string, project_id?: string) =>
+    fetchJson<ProjectScope>("/api/v1/projects/from-meeting", {
+      method: "POST",
+      body: JSON.stringify({ transcript, project_id })
+    }),
+  getSOWScope: (project_id: string) => fetchJson<ProjectScope>(`/api/v1/projects/${project_id}/scope`),
+  getSOWDraftProposal: (project_id: string) =>
+    fetchJson<{ project_id: string; version: number; client_ready: boolean; proposal_markdown: string }>(
+      `/api/v1/projects/${project_id}/draft-proposal`
+    ),
+  getSOWClientProposal: (project_id: string) =>
+    fetchJson<{ project_id: string; version: number; client_ready: boolean; approved_by: string; approved_at: string; proposal_markdown: string }>(
+      `/api/v1/projects/${project_id}/proposal`
+    ),
+  processSOWFollowUp: (project_id: string, transcript: string) =>
+    fetchJson<{ scope: ProjectScope; changes: ScopeChangeSet }>(`/api/v1/projects/${project_id}/follow-up`, {
+      method: "POST",
+      body: JSON.stringify({ transcript })
+    }),
+  approveSOWScope: (project_id: string, approved_by: string) =>
+    fetchJson<ProjectScope>(`/api/v1/projects/${project_id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approved_by })
+    }),
+  getSOWExportUrl: (project_id: string, format: string = "html", draft: boolean = false) =>
+    `/api/v1/projects/${project_id}/export?format=${format}&draft=${draft}`
 };

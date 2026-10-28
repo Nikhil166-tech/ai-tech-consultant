@@ -28,10 +28,19 @@ class Article(BaseModel):
     folder: Optional[str] = "General"
     body_text: str
     content_hash: Optional[str] = None
+    raw_content_hash: Optional[str] = None
+    normalized_content_hash: Optional[str] = None
     images: List[ImageMetadata] = Field(default_factory=list)
     last_modified: Optional[str] = None
     etag: Optional[str] = None
-    status: str = "active"  # 'active' or 'removed'
+    status: str = "active"  # 'active', 'quarantined', or 'removed'
+    user_id: Optional[str] = "default_user"
+    sitemap_id: Optional[str] = None
+    extraction_version: Optional[str] = "2.0"
+    embedding_model: Optional[str] = "BAAI/bge-small-en-v1.5"
+    embedding_version: Optional[str] = "1.0"
+    is_quarantined: Optional[bool] = False
+    quarantine_reason: Optional[str] = None
     crawled_at: datetime = Field(default_factory=utc_now)
 
 class ArticleChunk(BaseModel):
@@ -94,6 +103,7 @@ class AskResponse(BaseModel):
     expert_task_id: Optional[str] = None
     visual_references: List[ImageMetadata] = Field(default_factory=list)
     confidence_score: Optional[float] = None  # Deprecated alias for evidence_score
+    telemetry: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="after")
     def populate_confidence_alias(self):
@@ -156,10 +166,15 @@ class SitemapItem(BaseModel):
     id: str
     user_id: str = "default_user"
     root_url: str
+    canonical_root_url: Optional[str] = None
     url: Optional[str] = None
     name: str
     refresh_interval_days: int = 1
     refresh_interval: Optional[str] = None
+    next_refresh_at: Optional[str] = None
+    last_refresh_started_at: Optional[str] = None
+    last_refresh_completed_at: Optional[str] = None
+    schedule_status: str = "active"  # active, paused, disabled
     status: str = "registered"  # registered, previewed, confirmed, indexing, active, failed
     discovered_sitemaps_count: int = 1
     total_urls_count: int = 0
@@ -220,8 +235,15 @@ class RefreshRunSummary(BaseModel):
     failed_count: int = 0
     pending_count: int = 0
     quarantined_count: int = 0
-    status: str = "running"  # running, completed, failed, interrupted
+    status: str = "running"  # queued, running, paused, interrupted, failed, completed
+    stage: str = "QUEUED"    # QUEUED, FETCHING_SITEMAP, INDEXING_PAGES, COMPLETED
     progress_percent: float = 0.0
+    lease_token: Optional[str] = None
+    lease_expires_at: Optional[str] = None
+    heartbeat_at: Optional[str] = None
+    resumed_from_run_id: Optional[str] = None
+    last_processed_url: Optional[str] = None
+    error_details: Optional[str] = None
     estimate: Optional[IndexingEstimate] = None
 
 class RefreshRunUrlItem(BaseModel):
@@ -244,13 +266,16 @@ class RefreshRunDetail(BaseModel):
 class QuarantineReason(str, Enum):
     MISSING_404 = "MISSING_404"
     PERMANENT_REDIRECT_301 = "PERMANENT_REDIRECT_301"
+    REPLACED_BY_REDIRECT = "REPLACED_BY_REDIRECT"
     EXPLICIT_REMOVAL_410 = "EXPLICIT_REMOVAL_410"
     ADMIN_MANUAL = "ADMIN_MANUAL"
+    LEGACY_EXTRACTION_DEFECT = "LEGACY_EXTRACTION_DEFECT"
 
 class QuarantineRecord(BaseModel):
     id: str
     url: str
     sitemap_id: Optional[str] = None
+    user_id: Optional[str] = "default_user"
     title: str
     content: str
     chunks_count: int = 0
@@ -264,21 +289,161 @@ class QuarantineRecord(BaseModel):
 
 class URLHealthStatus(BaseModel):
     url: str
+    canonical_url: Optional[str] = None
     sitemap_id: Optional[str] = None
+    user_id: str = "default_user"
     consecutive_failure_count: int = 0
     configured_threshold: int = 3
     expected_action: str = "Quarantine on 3 consecutive failures"
+    pending_action: Optional[str] = None
+    action_rule: str = "QUARANTINE_ON_CONSECUTIVE_FAILURES"
     last_checked_at: str
     last_http_status: Optional[int] = None
+    last_successful_fetch_at: Optional[str] = None
+    last_attempted_fetch_at: Optional[str] = None
     is_in_sitemap: bool = True
+    is_healthy: bool = True
     failure_reason: Optional[str] = None
+    redirect_destination_url: Optional[str] = None
+    action_history: List[Dict[str, Any]] = Field(default_factory=list)
 
 class UserSettings(BaseModel):
     user_id: str = "default_user"
     sitemap_refresh_interval_days: int = 1
     url_quarantine_threshold_x: int = 3
     url_quarantine_action: str = "QUARANTINE_ON_CONSECUTIVE_FAILURES"
+    archive_retention_preset: str = "30_DAYS"  # 2_DAYS, 15_DAYS, 30_DAYS, CUSTOM
+    archive_retention_days: int = 30
     email_approval_threshold_x: int = 3
     auto_send_enabled: bool = False
     emergency_disable: bool = False
+
+    # Frontend-compatible alias fields
+    url_verification_threshold: Optional[int] = None
+    sitemap_refresh_frequency: Optional[str] = None
+    quarantine_action_rule: Optional[str] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.url_verification_threshold is not None:
+            self.url_quarantine_threshold_x = self.url_verification_threshold
+        else:
+            self.url_verification_threshold = self.url_quarantine_threshold_x
+
+        if self.quarantine_action_rule is not None:
+            self.url_quarantine_action = self.quarantine_action_rule
+        else:
+            self.quarantine_action_rule = self.url_quarantine_action
+
+        if self.sitemap_refresh_frequency is not None:
+            mapping = {"daily": 1, "weekly": 7, "biweekly": 15, "monthly": 30}
+            self.sitemap_refresh_interval_days = mapping.get(str(self.sitemap_refresh_frequency).lower(), self.sitemap_refresh_interval_days)
+        else:
+            self.sitemap_refresh_frequency = "daily" if self.sitemap_refresh_interval_days == 1 else f"{self.sitemap_refresh_interval_days} days"
+
+# -------------------------------------------------------------
+# Phase 7: Step 3 Production Scheduled Refresh & Archive Models
+# -------------------------------------------------------------
+
+class ScheduleUpdateRequest(BaseModel):
+    refresh_interval_days: Optional[int] = None  # 1, 7, 15, 30
+    schedule_status: Optional[str] = None       # active, paused, disabled
+
+class SchedulerStatusResponse(BaseModel):
+    status: str                                  # operational, degraded, paused
+    enabled: bool
+    active_workers_count: int = 0
+    total_scheduled_sitemaps: int = 0
+    due_sitemaps_count: int = 0
+    next_due_at: Optional[str] = None
+    last_scheduler_tick_at: Optional[str] = None
+    fair_queue: List[Dict[str, Any]] = Field(default_factory=list)
+
+class ArchivedArticleItem(BaseModel):
+    id: str
+    original_url: str
+    canonical_url: str
+    sitemap_id: Optional[str] = None
+    user_id: str = "default_user"
+    title: str
+    snippet: str
+    original_indexed_at: Optional[str] = None
+    archived_at: str
+    archive_reason: str
+    historical_http_status: Optional[int] = None
+    replacement_url: Optional[str] = None
+    last_successful_version: str = "2.0"
+    is_restore_eligible: bool = True
+    retention_preset: str = "30_DAYS"           # 2_DAYS, 15_DAYS, 30_DAYS, CUSTOM
+    retention_days: int = 30
+    retention_expires_at: Optional[str] = None
+    status: str = "archived"                    # archived, restored, review_pending, retention_expired
+    audit_events_count: int = 0
+
+class ArchivedArticleDetail(BaseModel):
+    item: ArchivedArticleItem
+    full_content: str
+    chunks_count: int = 0
+    audit_history: List[Dict[str, Any]] = Field(default_factory=list)
+
+class ArchiveRetentionUpdateRequest(BaseModel):
+    retention_preset: str                       # 2_DAYS, 15_DAYS, 30_DAYS, CUSTOM
+    retention_days: Optional[int] = None
+
+class ArticleRedirectItem(BaseModel):
+    id: str
+    source_url: str
+    canonical_source_url: str
+    target_url: str
+    canonical_target_url: str
+    sitemap_id: Optional[str] = None
+    user_id: str = "default_user"
+    http_status: int = 301
+    hops_count: int = 1
+    chain: List[str] = Field(default_factory=list)
+    replacement_article_indexed: bool = True
+    detected_at: str
+
+class ArticleHistoryItem(BaseModel):
+    id: str
+    url: str
+    version: str = "2.0"
+    title: Optional[str] = None
+    previous_title: Optional[str] = None
+    new_title: Optional[str] = None
+    change_type: str = "UPDATE"
+    change_classification: str = "CONTENT_UPDATE"
+    previous_hash: Optional[str] = None
+    new_hash: Optional[str] = None
+    previous_content_hash: Optional[str] = None
+    new_content_hash: Optional[str] = None
+    summary_diff: Optional[str] = None
+    content_snapshot: Optional[str] = None
+    recorded_at: str
+    changed_at: Optional[str] = None
+    refresh_run_id: Optional[str] = None
+
+# -------------------------------------------------------------
+# Phase 8: Step 4 AI Model Intelligence & Diagnostics Models
+# -------------------------------------------------------------
+
+class ModelRoleStatusItem(BaseModel):
+    role: str
+    primary_model: str
+    fallback_models: List[str] = Field(default_factory=list)
+    timeout_seconds: float = 15.0
+    max_attempts: int = 3
+    availability_status: str = "CONFIGURED"  # CONFIGURED | DEGRADED | UNAVAILABLE
+    provider: str = "google"
+    temperature: float = 0.2
+    supports_structured_output: bool = True
+    last_successful_invocation: Optional[str] = None
+    estimated_cost_per_1k_tokens: float = 0.0001
+
+
+class AIModelStatusResponse(BaseModel):
+    roles: List[ModelRoleStatusItem] = Field(default_factory=list)
+    spending_limit_usd: float = 50.0
+    current_estimated_spend_usd: float = 0.0
+    system_status: str = "OPERATIONAL"
+
 

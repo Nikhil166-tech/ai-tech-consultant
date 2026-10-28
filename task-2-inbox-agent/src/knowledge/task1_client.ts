@@ -1,4 +1,4 @@
-﻿import { Task1AskResponse } from "../types/index.js";
+import { Task1AskResponse } from "../types/index.js";
 import { Task1AskResponseSchema } from "../validation/schemas.js";
 
 export interface Task1ClientOptions {
@@ -35,9 +35,13 @@ export class Task1KnowledgeClient {
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
+      const internalKey = process.env.INTERNAL_SERVICE_KEY || "";
       const res = await fetch(`${this.baseUrl}/api/v1/ask`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Service-Key": internalKey
+        },
         body: JSON.stringify({
           question,
           category_filter: categoryFilter || null,

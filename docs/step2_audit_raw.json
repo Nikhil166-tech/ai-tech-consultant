@@ -1,0 +1,696 @@
+{
+  "integrity": [
+    [
+      "ok"
+    ]
+  ],
+  "schema_version": 50,
+  "user_version": 4,
+  "tables": {
+    "articles": "CREATE TABLE articles (\n                url TEXT PRIMARY KEY,\n                title TEXT NOT NULL,\n                category TEXT DEFAULT 'General',\n                folder TEXT DEFAULT 'General',\n                body_text TEXT NOT NULL,\n                images_json TEXT DEFAULT '[]',\n                last_modified TEXT,\n                etag TEXT,\n                status TEXT DEFAULT 'active',\n                crawled_at TEXT\n            , content_hash TEXT)",
+    "chunks": "CREATE TABLE chunks (\n                id TEXT PRIMARY KEY,\n                article_url TEXT NOT NULL,\n                title TEXT NOT NULL,\n                category TEXT DEFAULT 'General',\n                folder TEXT DEFAULT 'General',\n                chunk_index INTEGER,\n                text TEXT NOT NULL,\n                visual_context TEXT DEFAULT '',\n                embedding_json TEXT DEFAULT '[]', section_heading TEXT DEFAULT 'Overview', source_type TEXT DEFAULT 'OFFICIAL_DOC', provenance_notes TEXT, images_json TEXT DEFAULT '[]',\n                FOREIGN KEY (article_url) REFERENCES articles(url) ON DELETE CASCADE\n            )",
+    "crawler_checkpoint": "CREATE TABLE crawler_checkpoint (\n                url TEXT PRIMARY KEY,\n                last_checked TEXT,\n                status_code INTEGER,\n                etag TEXT,\n                last_modified TEXT,\n                error TEXT\n            , content_hash TEXT)",
+    "expert_tasks": "CREATE TABLE expert_tasks (\n                id TEXT PRIMARY KEY,\n                question TEXT NOT NULL,\n                context TEXT DEFAULT '',\n                requester_email TEXT,\n                status TEXT DEFAULT 'pending',\n                expert_answer TEXT,\n                created_at TEXT,\n                resolved_at TEXT\n            , expert_id TEXT, version TEXT DEFAULT '1.0', provenance_notes TEXT)",
+    "sync_state": "CREATE TABLE sync_state (\n                key TEXT PRIMARY KEY,\n                value_json TEXT,\n                updated_at TEXT\n            )",
+    "sitemaps": "CREATE TABLE sitemaps (\n                id TEXT PRIMARY KEY,\n                user_id TEXT DEFAULT 'default_user',\n                root_url TEXT NOT NULL,\n                name TEXT NOT NULL,\n                refresh_interval_days INTEGER DEFAULT 1,\n                status TEXT DEFAULT 'registered',\n                last_preview_json TEXT,\n                last_confirmed_at TEXT,\n                created_at TEXT,\n                updated_at TEXT\n            )",
+    "sitemap_relationships": "CREATE TABLE sitemap_relationships (\n                id TEXT PRIMARY KEY,\n                root_sitemap_id TEXT NOT NULL,\n                sitemap_url TEXT NOT NULL,\n                parent_sitemap_url TEXT,\n                depth INTEGER DEFAULT 0,\n                is_index INTEGER DEFAULT 0,\n                error TEXT,\n                created_at TEXT\n            )",
+    "sitemap_refresh_runs": "CREATE TABLE sitemap_refresh_runs (\n                id TEXT PRIMARY KEY,\n                sitemap_id TEXT NOT NULL,\n                user_id TEXT DEFAULT 'default_user',\n                started_at TEXT NOT NULL,\n                first_successful_fetch_at TEXT,\n                last_successful_fetch_at TEXT,\n                completed_at TEXT,\n                total_discovered_urls INTEGER DEFAULT 0,\n                total_successfully_fetched_urls INTEGER DEFAULT 0,\n                added_count INTEGER DEFAULT 0,\n                updated_count INTEGER DEFAULT 0,\n                unchanged_count INTEGER DEFAULT 0,\n                failed_count INTEGER DEFAULT 0,\n                pending_count INTEGER DEFAULT 0,\n                quarantined_count INTEGER DEFAULT 0,\n                status TEXT DEFAULT 'running',\n                progress_percent REAL DEFAULT 0.0,\n                estimate_json TEXT\n            )",
+    "refresh_run_urls": "CREATE TABLE refresh_run_urls (\n                id TEXT PRIMARY KEY,\n                run_id TEXT NOT NULL,\n                url TEXT NOT NULL,\n                status TEXT NOT NULL,\n                http_status INTEGER,\n                lastmod TEXT,\n                fetched_at TEXT,\n                error_message TEXT\n            )",
+    "url_health_status": "CREATE TABLE url_health_status (\n                url TEXT PRIMARY KEY,\n                sitemap_id TEXT,\n                consecutive_failure_count INTEGER DEFAULT 0,\n                configured_threshold INTEGER DEFAULT 3,\n                expected_action TEXT DEFAULT 'Quarantine on 3 consecutive failures',\n                last_checked_at TEXT,\n                last_http_status INTEGER,\n                is_in_sitemap INTEGER DEFAULT 1,\n                failure_reason TEXT\n            , user_id TEXT)",
+    "url_health_observations": "CREATE TABLE url_health_observations (\n                id TEXT PRIMARY KEY,\n                url TEXT NOT NULL,\n                sitemap_id TEXT,\n                run_id TEXT,\n                http_status INTEGER,\n                redirect_url TEXT,\n                is_in_sitemap INTEGER DEFAULT 1,\n                observed_at TEXT,\n                error_reason TEXT\n            )",
+    "quarantine_records": "CREATE TABLE quarantine_records (\n                id TEXT PRIMARY KEY,\n                url TEXT NOT NULL UNIQUE,\n                sitemap_id TEXT,\n                title TEXT NOT NULL,\n                content TEXT NOT NULL,\n                chunks_json TEXT DEFAULT '[]',\n                embeddings_json TEXT DEFAULT '[]',\n                last_known_http_status INTEGER,\n                quarantine_reason TEXT NOT NULL,\n                replacement_url TEXT,\n                detected_at TEXT,\n                quarantined_at TEXT,\n                restored_at TEXT,\n                sitemap_presence_history_json TEXT DEFAULT '[]'\n            , user_id TEXT)",
+    "user_settings": "CREATE TABLE user_settings (\n                user_id TEXT PRIMARY KEY,\n                sitemap_refresh_interval_days INTEGER DEFAULT 1,\n                url_quarantine_threshold_x INTEGER DEFAULT 3,\n                url_quarantine_action TEXT DEFAULT 'QUARANTINE_ON_CONSECUTIVE_FAILURES',\n                email_approval_threshold_x INTEGER DEFAULT 3,\n                auto_send_enabled INTEGER DEFAULT 0,\n                emergency_disable INTEGER DEFAULT 0,\n                updated_at TEXT\n            , retention_preset_days INTEGER DEFAULT 30, model_classification TEXT, model_drafting TEXT, model_kb_answer TEXT)",
+    "users": "CREATE TABLE users (\n                id TEXT PRIMARY KEY,\n                email TEXT UNIQUE NOT NULL,\n                password_hash TEXT NOT NULL,\n                display_name TEXT,\n                role TEXT DEFAULT 'user',\n                created_at TEXT\n            , failed_login_attempts INTEGER DEFAULT 0, locked_until TEXT, last_login_at TEXT)",
+    "user_sessions": "CREATE TABLE user_sessions (\n                session_id TEXT PRIMARY KEY,\n                user_id TEXT NOT NULL,\n                expires_at TEXT NOT NULL,\n                created_at TEXT\n            , csrf_token TEXT, last_activity_at TEXT)",
+    "article_history": "CREATE TABLE article_history (\n            id TEXT PRIMARY KEY,\n            url TEXT NOT NULL,\n            version INTEGER DEFAULT 1,\n            title TEXT NOT NULL,\n            change_type TEXT NOT NULL,\n            previous_hash TEXT,\n            new_hash TEXT,\n            summary_diff TEXT,\n            recorded_at TEXT\n        )",
+    "url_redirects": "CREATE TABLE url_redirects (\n            source_url TEXT PRIMARY KEY,\n            target_url TEXT NOT NULL,\n            http_status INTEGER DEFAULT 301,\n            detected_at TEXT NOT NULL\n        )"
+  },
+  "row_counts": {
+    "articles": 508,
+    "user_settings": 30,
+    "url_redirects": 14,
+    "expert_tasks": 404,
+    "sitemap_refresh_runs": 7,
+    "article_history": 504,
+    "sitemaps": 13,
+    "url_health_status": 892,
+    "sitemap_relationships": 48,
+    "crawler_checkpoint": 545,
+    "quarantine_records": 1,
+    "users": 8,
+    "user_sessions": 66,
+    "chunks": 1921,
+    "url_health_observations": 3242,
+    "sync_state": 1,
+    "refresh_run_urls": 774
+  },
+  "article_columns": [
+    "url",
+    "title",
+    "category",
+    "folder",
+    "body_text",
+    "images_json",
+    "last_modified",
+    "etag",
+    "status",
+    "crawled_at",
+    "content_hash"
+  ],
+  "total_articles": 508,
+  "articles_grouped": [
+    [
+      "none",
+      "none",
+      0,
+      508
+    ]
+  ],
+  "domain_distribution": {
+    "bdgrowthsuite.com": 93,
+    "support.brilliantdirectories.com": 228,
+    "www.brilliantdirectories.com": 187
+  },
+  "duplicate_content_hash_count": 16,
+  "duplicate_content_sample": [
+    {
+      "hash": "af5b48839d73570eb1d469cbe53f0d66befcb2183695f779fc14e73f92b6f4a0",
+      "count": 185,
+      "sample_urls": [
+        "https://www.brilliantdirectories.com/blog/bd-butler-just-got-smarter-create-better-web-pages-emails-with-ai",
+        "https://www.brilliantdirectories.com/blog/webinar-wednesday-228-july-22-2026",
+        "https://www.brilliantdirectories.com/blog/organizing-a-member-resource-library-with-ai",
+        "https://www.brilliantdirectories.com/blog/create-a-signup-form-that-works",
+        "https://www.brilliantdirectories.com/blog/webinar-wednesday-227-july-8-2026"
+      ],
+      "title": "BD Butler Just Got Smarter \u2013 Create Better Web Pages & Emails with AI",
+      "len": 551
+    },
+    {
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "count": 5,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/",
+        "https://bdgrowthsuite.com/customization",
+        "https://bdgrowthsuite.com/consultation",
+        "https://bdgrowthsuite.com/getcredits",
+        "https://bdgrowthsuite.com/blabs-review"
+      ],
+      "title": "Well, Hello There...What Service Do You Need Help With Today?",
+      "len": 0
+    },
+    {
+      "hash": "95c49f9a85d39f138bccd50f784f4bef9d1535dc33008edccc6a6299cd38c1c9",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/blog/guide-to-effective-website-popups-on-brilliant-directories",
+        "https://bdgrowthsuite.com/blog/guide-to-creating-effective-popups-on-brilliant-directories"
+      ],
+      "title": "Guide to Creating Effective Popups on Brilliant Directories",
+      "len": 12372
+    },
+    {
+      "hash": "7a9ac57df55d31ff30183a25180af301a4dfd7be6cb0d69385eeab7ee4b09d2e",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/blog/how-to-change-the-discount-tag-on-checkout-pages",
+        "https://bdgrowthsuite.com/blog/how-to-customize-the-discount-tag-on-your-checkout-pages"
+      ],
+      "title": "How to Customize the Discount Tag on Your Checkout Pages",
+      "len": 3834
+    },
+    {
+      "hash": "51c07a0e788657d09040b6fdbf8143e117c4779b741c155d41bd1a4083cc9bad",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/mailchimp-integration-for-member-signup-on-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/mailchimp-integration-for-member-signup"
+      ],
+      "title": "Customer Login",
+      "len": 197
+    },
+    {
+      "hash": "634f24c5fe1e333c500c3e91dc28d24ec4f2517e3e6da1e0ec6230754af535e6",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/schema-for-members-category-specific-search-results-page",
+        "https://bdgrowthsuite.com/tools/schema-for-category-search-results-page"
+      ],
+      "title": "Customer Login",
+      "len": 197
+    },
+    {
+      "hash": "0128e9ed09a91acf6b3932133973c55dfa12be6ba8b8e6fec01fa5b517f9dfe1",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/edit-existing-tabs-on-member-profile-pages",
+        "https://bdgrowthsuite.com/tools/how-to-edit-existing-tabs-on-member-profile-pages"
+      ],
+      "title": "How to Edit Existing Tabs on Member Profile Pages",
+      "len": 4269
+    },
+    {
+      "hash": "ab4311025dc6355b42ea9ffa6862f6f8cdd491343d25e80fe08a1ec07d9c31f1",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/video-preview-on-member-profiles-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/video-preview-on-member-profiles-setup-guide"
+      ],
+      "title": "Customer Login",
+      "len": 202
+    },
+    {
+      "hash": "4fe6dcd1f481bbb75193facefcce0966d0352797ed25bf9b1d593f76edbec2fa",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/add-google-reviews-to-brilliant-directories-member-profiles",
+        "https://bdgrowthsuite.com/tools/how-to-add-google-reviews-to-member-profiles"
+      ],
+      "title": "Customer Login",
+      "len": 202
+    },
+    {
+      "hash": "025d8c0b53babcc684a909a38c262b30ca12637629aece37c607330b1a54ed82",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/custom-badge-display-on-search-results-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/custom-badge-display-on-search-results-page"
+      ],
+      "title": "Customer Login",
+      "len": 201
+    },
+    {
+      "hash": "aa952e0c43942113eec42de8fbc40c051a618ee8e6067ec040e760f1ccdf7de0",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/custom-search-filters-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/custom-search-filters-for-directory-websites"
+      ],
+      "title": "Custom Search Filters for Directory Websites",
+      "len": 5564
+    },
+    {
+      "hash": "56f53ddaf2bfb517031e86d14f83041dc9f917efaefbc4de5306714899c96096",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/custom-member-dashboard-checklist-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/custom-member-dashboard-checklist"
+      ],
+      "title": "Custom Member Dashboard Checklist",
+      "len": 4271
+    },
+    {
+      "hash": "64bc03fb2c831218eed8e0ea56d1033aa43dc33716708dc0532b2507b35b9d51",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/members-approval-plugin-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/members-approval-flow-plugin-for-directory-website"
+      ],
+      "title": "Customer Login",
+      "len": 208
+    },
+    {
+      "hash": "95bffe6f03860db177f32772311efd5ebadb22d8d40f74bcc31929acd6f99026",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/google-analytics-integration-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/google-analytics-integration-for-directory-sites"
+      ],
+      "title": "Customer Login",
+      "len": 206
+    },
+    {
+      "hash": "514f3969a4328c655b26829327574a419e39d5aed1e3c7a5434ed23d1761cddd",
+      "count": 2,
+      "sample_urls": [
+        "https://bdgrowthsuite.com/tools/floating-social-media-icons-for-brilliant-directories",
+        "https://bdgrowthsuite.com/tools/floating-social-media-icons-for-directory-websites"
+      ],
+      "title": "Customer Login",
+      "len": 208
+    }
+  ],
+  "boilerplate_occurrences": {
+    "Checkout": 52,
+    "Navigation": 3,
+    "Sign in": 8,
+    "Log in": 10,
+    "Subscribe": 4,
+    "Cart": 5,
+    "Powered by": 2,
+    "404": 1
+  },
+  "short_articles_count": 32,
+  "short_articles_sample": [
+    {
+      "url": "https://support.brilliantdirectories.com/support/home",
+      "title": "What Do You Need Help With?",
+      "len": 11
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/12000001358",
+      "title": "What Do You Need Help With?",
+      "len": 90
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000000697",
+      "title": "What Do You Need Help With?",
+      "len": 45
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000005684",
+      "title": "What Do You Need Help With?",
+      "len": 47
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000005225",
+      "title": "What Do You Need Help With?",
+      "len": 90
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000005685",
+      "title": "What Do You Need Help With?",
+      "len": 53
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000005686",
+      "title": "What Do You Need Help With?",
+      "len": 51
+    },
+    {
+      "url": "https://bdgrowthsuite.com/",
+      "title": "Well, Hello There...What Service Do You Need Help With Today?",
+      "len": 0
+    },
+    {
+      "url": "https://bdgrowthsuite.com/customization",
+      "title": "Bespoke Customizations by the Best Brilliant Directories Developers",
+      "len": 0
+    },
+    {
+      "url": "https://bdgrowthsuite.com/consultation",
+      "title": "Expert Consulting for Your Business Directories.Win a Competitive Edge.",
+      "len": 0
+    },
+    {
+      "url": "https://bdgrowthsuite.com/getcredits",
+      "title": "Let Us Remove the Hassle Out of Your Decision-Making Process",
+      "len": 0
+    },
+    {
+      "url": "https://bdgrowthsuite.com/blabs-review",
+      "title": "We Made These BusinessesHappy? \u201cVERY HAPPY!\u201d",
+      "len": 0
+    },
+    {
+      "url": "https://bdgrowthsuite.com/blog/auto-downgrade-membership-plan",
+      "title": "From Paid to Free: The Effortless Way to Manage Past Due Memberships",
+      "len": 48
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000005697",
+      "title": "What Do You Need Help With?",
+      "len": 57
+    },
+    {
+      "url": "https://support.brilliantdirectories.com/support/solutions/folders/12000005700",
+      "title": "What Do You Need Help With?",
+      "len": 46
+    }
+  ],
+  "chunk_table_name": "chunks",
+  "chunk_columns": [
+    "id",
+    "article_url",
+    "title",
+    "category",
+    "folder",
+    "chunk_index",
+    "text",
+    "visual_context",
+    "embedding_json",
+    "section_heading",
+    "source_type",
+    "provenance_notes",
+    "images_json"
+  ],
+  "total_chunks": 1921,
+  "chunks_with_embedding": 1921,
+  "chunks_without_embedding": 0,
+  "sitemap_columns": [
+    "id",
+    "user_id",
+    "root_url",
+    "name",
+    "refresh_interval_days",
+    "status",
+    "last_preview_json",
+    "last_confirmed_at",
+    "created_at",
+    "updated_at"
+  ],
+  "sitemaps": [
+    [
+      "sm_7e41f36b19",
+      "default_user",
+      "https://bdgrowthsuite.com/sitemap_index.xml",
+      "https://bdgrowthsuite.com/sitemap_index.xml",
+      1,
+      "active",
+      null,
+      "2026-10-23T12:33:30.585495+00:00",
+      "2026-10-23T12:33:30.501962+00:00",
+      "2026-10-26T16:32:03.231302+00:00"
+    ],
+    [
+      "sm_10a4981a54",
+      "default_user",
+      "https://brilliantdirectories.com/sitemap.xml",
+      "https://brilliantdirectories.com/sitemap.xml",
+      1,
+      "active",
+      null,
+      "2026-10-23T12:45:34.142713+00:00",
+      "2026-10-23T12:45:34.070847+00:00",
+      "2026-10-26T17:53:00.767032+00:00"
+    ],
+    [
+      "sm_4a1983ddd0",
+      "default_user",
+      "https://support.brilliantdirectories.com/support/sitemap.xml",
+      "https://support.brilliantdirectories.com/support/sitemap.xml",
+      1,
+      "active",
+      null,
+      "2026-10-26T18:44:20.511014+00:00",
+      "2026-10-26T18:44:20.437759+00:00",
+      "2026-10-27T03:57:36.647296+00:00"
+    ],
+    [
+      "sm_65df078dce",
+      "u_cf43d9e974",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:43:08.426858+00:00",
+      "2026-10-27T11:43:08.426858+00:00"
+    ],
+    [
+      "sm_732ff15a9a",
+      "u_8ab2e9003f",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:47:09.118410+00:00",
+      "2026-10-27T11:47:09.118410+00:00"
+    ],
+    [
+      "sm_9fd64ab121",
+      "u_6cb5bf0bb1",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:48:11.263085+00:00",
+      "2026-10-27T11:48:11.263085+00:00"
+    ],
+    [
+      "sm_94007cc1b2",
+      "u_fd88ce6658",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:49:03.691812+00:00",
+      "2026-10-27T11:49:03.691812+00:00"
+    ],
+    [
+      "sm_56f45c0ade",
+      "u_4e48891136",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:50:19.931912+00:00",
+      "2026-10-27T11:50:19.931912+00:00"
+    ],
+    [
+      "sm_5e8c4984d8",
+      "u_cd18538bb7",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:52:51.179575+00:00",
+      "2026-10-27T11:52:51.179575+00:00"
+    ],
+    [
+      "sm_a5c88f52a3",
+      "u_4f6485a4a8",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T11:53:46.655244+00:00",
+      "2026-10-27T11:53:46.655244+00:00"
+    ],
+    [
+      "sm_3973251c09",
+      "u_c04788a686",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T12:07:25.608108+00:00",
+      "2026-10-27T12:07:25.608108+00:00"
+    ],
+    [
+      "sm_a26cb0be5f",
+      "u_cd9249b8b9",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T12:11:07.829451+00:00",
+      "2026-10-27T12:11:07.829451+00:00"
+    ],
+    [
+      "sm_31e6f304aa",
+      "u_f9a3fa1d4f",
+      "https://alpha.example.com/sitemap.xml",
+      "https://alpha.example.com/sitemap.xml",
+      1,
+      "registered",
+      null,
+      null,
+      "2026-10-27T14:38:06.416990+00:00",
+      "2026-10-27T14:38:06.416990+00:00"
+    ]
+  ],
+  "refresh_run_columns": [
+    "id",
+    "sitemap_id",
+    "user_id",
+    "started_at",
+    "first_successful_fetch_at",
+    "last_successful_fetch_at",
+    "completed_at",
+    "total_discovered_urls",
+    "total_successfully_fetched_urls",
+    "added_count",
+    "updated_count",
+    "unchanged_count",
+    "failed_count",
+    "pending_count",
+    "quarantined_count",
+    "status",
+    "progress_percent",
+    "estimate_json"
+  ],
+  "refresh_runs": [
+    [
+      "run_6a07452c81",
+      "sm_7e41f36b19",
+      "default_user",
+      "2026-10-23T12:33:30.600566+00:00",
+      "2026-10-23T12:36:06.175070+00:00",
+      "2026-10-23T12:49:35.582807+00:00",
+      "2026-10-26T16:32:03.231302+00:00",
+      85,
+      81,
+      68,
+      0,
+      13,
+      4,
+      0,
+      0,
+      "completed",
+      100.0,
+      "{\"pages_processed_5min\":0,\"crawl_duration_avg_sec\":0.0,\"chunk_duration_avg_sec\":0.0,\"embed_duration_avg_sec\":0.0,\"db_duration_avg_sec\":0.0,\"observed_throughput_pages_per_min\":0.0,\"total_pages_remaining\":70,\"estimated_remaining_seconds\":0.0,\"estimated_completion_time_human\":\"Calculating...\",\"disclaimer\":\"Estimate based on current 5-minute rolling throughput; not a guaranteed SLA\",\"is_interrupted\":false,\"checkpoint_url\":null}"
+    ],
+    [
+      "run_c63b65725b",
+      "sm_10a4981a54",
+      "default_user",
+      "2026-10-23T12:45:34.157024+00:00",
+      null,
+      null,
+      "2026-10-26T16:32:03.231302+00:00",
+      25,
+      25,
+      25,
+      0,
+      0,
+      0,
+      0,
+      0,
+      "completed",
+      100.0,
+      null
+    ],
+    [
+      "run_7a16fafd68",
+      "sm_10a4981a54",
+      "default_user",
+      "2026-10-26T17:05:22.218022+00:00",
+      null,
+      null,
+      "2026-10-26T17:20:19.272296+00:00",
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      "interrupted",
+      0.0,
+      null
+    ],
+    [
+      "run_6ed2fdd94e",
+      "sm_10a4981a54",
+      "default_user",
+      "2026-10-26T17:05:30.465039+00:00",
+      null,
+      null,
+      "2026-10-26T17:20:19.272296+00:00",
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      "interrupted",
+      0.0,
+      null
+    ],
+    [
+      "run_c2170221b2",
+      "sm_10a4981a54",
+      "default_user",
+      "2026-10-26T17:22:25.897923+00:00",
+      "2026-10-26T17:23:28.797149+00:00",
+      "2026-10-26T17:33:12.943608+00:00",
+      "2026-10-26T17:53:00.767032+00:00",
+      1238,
+      186,
+      186,
+      0,
+      0,
+      35,
+      1016,
+      0,
+      "interrupted",
+      17.9,
+      "{\"pages_processed_5min\":0,\"crawl_duration_avg_sec\":0.0,\"chunk_duration_avg_sec\":0.0,\"embed_duration_avg_sec\":0.0,\"db_duration_avg_sec\":0.0,\"observed_throughput_pages_per_min\":0.0,\"total_pages_remaining\":1016,\"estimated_remaining_seconds\":0.0,\"estimated_completion_time_human\":\"Calculating...\",\"disclaimer\":\"Estimate based on current 5-minute rolling throughput; not a guaranteed SLA\",\"is_interrupted\":false,\"checkpoint_url\":null}"
+    ],
+    [
+      "run_720e8cf352",
+      "sm_4a1983ddd0",
+      "default_user",
+      "2026-10-26T18:44:20.529113+00:00",
+      "2026-10-26T18:56:22.126809+00:00",
+      "2026-10-26T19:42:53.093652+00:00",
+      "2026-10-27T03:57:36.647296+00:00",
+      1700,
+      210,
+      178,
+      5,
+      27,
+      0,
+      1490,
+      0,
+      "interrupted",
+      12.4,
+      "{\"pages_processed_5min\":0,\"crawl_duration_avg_sec\":0.0,\"chunk_duration_avg_sec\":0.0,\"embed_duration_avg_sec\":0.0,\"db_duration_avg_sec\":0.0,\"observed_throughput_pages_per_min\":0.0,\"total_pages_remaining\":1490,\"estimated_remaining_seconds\":0.0,\"estimated_completion_time_human\":\"Calculating...\",\"disclaimer\":\"Estimate based on current 5-minute rolling throughput; not a guaranteed SLA\",\"is_interrupted\":false,\"checkpoint_url\":null}"
+    ],
+    [
+      "run_e6b9ae048b",
+      "sm_4a1983ddd0",
+      "default_user",
+      "2026-10-26T18:47:06.935305+00:00",
+      "2026-10-26T18:58:29.666841+00:00",
+      "2026-10-26T19:42:45.789473+00:00",
+      "2026-10-27T03:57:36.647296+00:00",
+      1700,
+      210,
+      14,
+      0,
+      196,
+      0,
+      1490,
+      0,
+      "interrupted",
+      12.4,
+      "{\"pages_processed_5min\":0,\"crawl_duration_avg_sec\":0.0,\"chunk_duration_avg_sec\":0.0,\"embed_duration_avg_sec\":0.0,\"db_duration_avg_sec\":0.0,\"observed_throughput_pages_per_min\":0.0,\"total_pages_remaining\":1490,\"estimated_remaining_seconds\":0.0,\"estimated_completion_time_human\":\"Calculating...\",\"disclaimer\":\"Estimate based on current 5-minute rolling throughput; not a guaranteed SLA\",\"is_interrupted\":false,\"checkpoint_url\":null}"
+    ]
+  ],
+  "checkpoint_columns": [
+    "url",
+    "last_checked",
+    "status_code",
+    "etag",
+    "last_modified",
+    "error",
+    "content_hash"
+  ],
+  "total_checkpoints": 545,
+  "checkpoints_by_status": [
+    [
+      200,
+      507
+    ],
+    [
+      404,
+      2
+    ],
+    [
+      500,
+      36
+    ]
+  ]
+}

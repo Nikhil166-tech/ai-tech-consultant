@@ -9,6 +9,8 @@ import { SitemapManagementView } from "./components/SitemapManagementView";
 import { RefreshRunsView } from "./components/RefreshRunsView";
 import { QuarantineView } from "./components/QuarantineView";
 import { AnalyticsView } from "./components/AnalyticsView";
+import { AIIntelligenceView } from "./components/AIIntelligenceView";
+import { MeetingToSOWView } from "./components/MeetingToSOWView";
 import { SettingsView } from "./components/SettingsView";
 import { AuthModal } from "./components/AuthModal";
 import { ComposeModal } from "./components/ComposeModal";
@@ -120,6 +122,16 @@ export function App() {
 
   useEffect(() => {
     loadData();
+
+    const handleUnauthorized = () => {
+      setUser(null);
+      setIsAuthOpen(true);
+    };
+
+    window.addEventListener("auth:unauthorized", handleUnauthorized);
+    return () => {
+      window.removeEventListener("auth:unauthorized", handleUnauthorized);
+    };
   }, []);
 
   // Handlers
@@ -274,6 +286,7 @@ export function App() {
               interactions={interactions}
               onReview={handleReview}
               onSendViaGmail={handleSendViaGmail}
+              onRefreshInbox={loadData}
               isGmailConnected={gmailStatus.isConnected}
             />
           )}
@@ -283,9 +296,12 @@ export function App() {
               interactions={interactions.filter((i) => i.status === "PENDING_REVIEW")}
               onReview={handleReview}
               onSendViaGmail={handleSendViaGmail}
+              onRefreshInbox={loadData}
               isGmailConnected={gmailStatus.isConnected}
             />
           )}
+
+          {currentView === "meeting_sow" && <MeetingToSOWView onRefreshData={loadData} />}
 
           {currentView === "chat" && <KnowledgeChatView onSendMessage={api.askQuestion} />}
 
@@ -331,6 +347,8 @@ export function App() {
             />
           )}
 
+          {currentView === "ai_models" && <AIIntelligenceView />}
+
           {currentView === "settings" && (
             <SettingsView
               user={user}
@@ -364,6 +382,7 @@ export function App() {
         isOpen={isComposeOpen}
         onClose={() => setIsComposeOpen(false)}
         onSimulateIncoming={handleSimulateIncoming}
+        onRefreshInbox={loadData}
         isGmailConnected={gmailStatus.isConnected}
       />
 

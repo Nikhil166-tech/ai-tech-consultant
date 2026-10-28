@@ -1,10 +1,14 @@
 import os
 import re
 import json
+import logging
 import httpx
 from pydantic import BaseModel
 from app.models import RequirementItem, CapabilityStatus, Task1Citation
 from app.task1_client import Task1MeetingClient
+from app.fallback_engine import ModelFallbackEngine
+
+logger = logging.getLogger("CapabilityChecker")
 
 
 class ClaudeCapabilityDecision(BaseModel):
@@ -28,7 +32,7 @@ class ProductCapabilityCheckerAgent:
         self,
         task1_client: Task1MeetingClient | None = None,
         api_key: str | None = None,
-        model: str = "claude-haiku-5-5",
+        model: str = "claude-3-5-haiku-latest",
     ):
         self.task1_client = task1_client or Task1MeetingClient()
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
@@ -134,48 +138,41 @@ class ProductCapabilityCheckerAgent:
         )
 
         gemini_key = os.getenv("GEMINI_API_KEY") or (self.api_key if self.api_key and not self.api_key.startswith("sk-ant-") else None)
-        if gemini_key:
-            gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}"
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                res = await client.post(
-                    url,
-                    json={
-                        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                        "systemInstruction": {"parts": [{"text": system_prompt}]},
-                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 600}
-                    }
-                )
-        else:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                res = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": self.api_key or "",
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                        **({"anthropic-workspace-id": os.getenv("ANTHROPIC_WORKSPACE_ID")} if os.getenv("ANTHROPIC_WORKSPACE_ID") else {}),
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": 500,
-                        "system": system_prompt,
-                        "messages": [{"role": "user", "content": user_prompt}],
-                    },
-                )
+        claude_key = self.api_key if (self.api_key and self.api_key.startswith("sk-ant-")) else os.getenv("ANTHROPIC_API_KEY")
 
-        if res.status_code == 200:
-            data = res.json()
-            raw_text = ""
-            if "candidates" in data and data["candidates"]:
-                raw_text = data["candidates"][0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-            elif "content" in data and data["content"]:
-                raw_text = data["content"][0].get("text", "").strip()
+        def validate_decision(raw_text: str):
             match = re.search(r"\{[\s\S]*\}", raw_text)
-            if match:
+            if not match:
+                return False, None, "No valid JSON object found in response"
+            try:
                 parsed = json.loads(match.group(0))
-                return ClaudeCapabilityDecision.model_validate(parsed)
+                decision = ClaudeCapabilityDecision.model_validate(parsed)
+                return True, decision, None
+            except Exception as e:
+                return False, None, f"JSON/validation error: {e}"
 
+        fallback_engine = ModelFallbackEngine(
+            role="CAPABILITY_CHECKING",
+            gemini_api_key=gemini_key,
+            anthropic_api_key=claude_key,
+            anthropic_workspace_id=os.getenv("ANTHROPIC_WORKSPACE_ID"),
+        )
+
+        _, validated, telemetry = await fallback_engine.execute_with_fallback(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=600,
+            temperature=0.1,
+            validate_fn=validate_decision,
+        )
+
+        if validated:
+            return validated
+
+        logger.warning(
+            "All capability models in fallback cascade failed (%s); falling back to deterministic classifier",
+            telemetry.fallback_reason,
+        )
         return self._classify_deterministic(requirement, answer, citations)
 
     def _classify_deterministic(

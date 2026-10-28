@@ -96,6 +96,7 @@ class ScopeChangeSet(BaseModel):
 
 class ProjectScope(BaseModel):
     project_id: str
+    user_id: str | None = None
     version: int = 1
     meeting_count: int = 1
     client_goal: str

@@ -9,6 +9,9 @@ import {
   TaxonomyItem,
   formatKindKey
 } from "../types/index.js";
+import { ModelFallbackEngine } from "../drafting/fallback_engine.js";
+import { cleanEmailText } from "./cleaner.js";
+import { PromptBuilder } from "../prompting/prompt_builder.js";
 
 const DEFAULT_TAXONOMY: TaxonomyItem[] = [
   {
@@ -79,7 +82,7 @@ const DEFAULT_TAXONOMY: TaxonomyItem[] = [
     parentSettingType: "Billing",
     specificLabel: "Payment Settings",
     description: "Payment gateways, Stripe keys, PayPal integration, transaction fees, and currencies",
-    keywords: ["payment", "stripe", "paypal", "gateway", "publishable key", "secret key", "credit card", "merchant", "currency", "coupon", "discount code"],
+    keywords: ["payment", "stripe", "stipe", "paypal", "gateway", "publishable key", "secret key", "credit card", "merchant", "currency", "coupon", "discount code"],
     synonyms: ["payment processor", "checkout gateway", "billing gateway", "payment integration"],
     enabled: true
   },
@@ -115,10 +118,157 @@ const DEFAULT_TAXONOMY: TaxonomyItem[] = [
 export class EmailClassifier {
   private taxonomy: TaxonomyItem[] = [];
   private readonly taxonomyFilePath: string;
+  public readonly fallbackEngine: ModelFallbackEngine;
 
-  constructor(taxonomyFilePath?: string) {
+  constructor(taxonomyFilePath?: string, fallbackEngine?: ModelFallbackEngine) {
     this.taxonomyFilePath = taxonomyFilePath || path.join(process.cwd(), "data", "taxonomy.json");
+    this.fallbackEngine = fallbackEngine || new ModelFallbackEngine({ role: "EMAIL_CLASSIFICATION" });
     this.loadTaxonomy();
+  }
+
+  public async classifyAsync(email: CustomerEmail): Promise<EmailClassification> {
+    const cleaned = cleanEmailText(email.subject, email.body);
+    const baseline = this.classify(email);
+
+    // If deterministic safety heuristic triggered prompt injection or account compromise, escalate immediately
+    if (
+      baseline.riskFlags.includes("PROMPT_INJECTION_DETECTED") ||
+      baseline.riskFlags.includes("ACCOUNT_SECURITY_COMPROMISE")
+    ) {
+      return {
+        ...baseline,
+        cleanedBody: cleaned.cleanedBody,
+        classificationModel: "deterministic_safety_heuristic",
+        classificationProvider: "deterministic"
+      };
+    }
+
+    // Build structured LLM prompt
+    const { systemPrompt, userPrompt } = PromptBuilder.buildClassificationPrompt({
+      email,
+      taxonomy: this.taxonomy
+    });
+
+    const validateFn = (rawText: string): { valid: boolean; error?: string } => {
+      try {
+        let cleanedJson = rawText.trim();
+        if (cleanedJson.startsWith("```")) {
+          cleanedJson = cleanedJson.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+        }
+        const obj = JSON.parse(cleanedJson);
+        if (!obj.parentSettingType || !obj.specificLabel) {
+          return { valid: false, error: "Missing parentSettingType or specificLabel" };
+        }
+        const matchingTaxonomy = this.taxonomy.find(
+          (t) => t.enabled !== false &&
+                 t.parentSettingType.toLowerCase() === String(obj.parentSettingType).toLowerCase() &&
+                 t.specificLabel.toLowerCase() === String(obj.specificLabel).toLowerCase()
+        );
+        if (!matchingTaxonomy) {
+          return { valid: false, error: `Label '${obj.parentSettingType} -> ${obj.specificLabel}' not in enabled taxonomy` };
+        }
+        return { valid: true };
+      } catch (err: any) {
+        return { valid: false, error: `Invalid JSON output: ${err.message}` };
+      }
+    };
+
+    try {
+      const { text, telemetry } = await this.fallbackEngine.executeWithFallback(
+        systemPrompt,
+        userPrompt,
+        validateFn
+      );
+
+      if (text) {
+        let cleanedJson = text.trim();
+        if (cleanedJson.startsWith("```")) {
+          cleanedJson = cleanedJson.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+        }
+        const parsed = JSON.parse(cleanedJson);
+
+        const matchedTax = this.taxonomy.find(
+          (t) => t.enabled !== false &&
+                 t.parentSettingType.toLowerCase() === String(parsed.parentSettingType).toLowerCase() &&
+                 t.specificLabel.toLowerCase() === String(parsed.specificLabel).toLowerCase()
+        );
+
+        const parentSettingType = matchedTax ? matchedTax.parentSettingType : parsed.parentSettingType;
+        const specificLabel = matchedTax ? matchedTax.specificLabel : parsed.specificLabel;
+        const labelKey = `${parentSettingType} -> ${specificLabel}`;
+
+        const intentKeys = Object.values(Intent);
+        const intent = intentKeys.includes(parsed.intent) ? (parsed.intent as Intent) : baseline.kind.intent;
+
+        const riskKeys = Object.values(RiskLevel);
+        let riskLevel = riskKeys.includes(parsed.riskLevel) ? (parsed.riskLevel as RiskLevel) : baseline.kind.riskLevel;
+
+        const prodKeys = Object.values(ProductArea);
+        const productArea = prodKeys.includes(parsed.productArea) ? (parsed.productArea as ProductArea) : baseline.kind.productArea;
+
+        const riskFlags = Array.from(new Set([...(parsed.riskFlags || []), ...baseline.riskFlags]));
+        if (
+          riskFlags.includes("PROMPT_INJECTION_DETECTED") ||
+          riskFlags.includes("ACCOUNT_SECURITY_COMPROMISE") ||
+          riskFlags.includes("LEGAL_OR_COMPLIANCE_RISK")
+        ) {
+          riskLevel = RiskLevel.CRITICAL;
+        } else if (
+          riskFlags.includes("FINANCIAL_DISPUTE_OR_REFUND") ||
+          riskFlags.includes("ACCOUNT_CANCELLATION")
+        ) {
+          riskLevel = RiskLevel.HIGH;
+        }
+
+        const uncertaintyIndicator = Boolean(parsed.uncertaintyIndicator || (parsed.confidence && parsed.confidence < 0.65));
+        const requiresHumanReview =
+          parsed.requiresHumanReview === true ||
+          uncertaintyIndicator ||
+          riskLevel === RiskLevel.HIGH ||
+          riskLevel === RiskLevel.CRITICAL ||
+          riskFlags.length > 0;
+
+        const urgency: "LOW" | "NORMAL" | "HIGH" =
+          riskLevel === RiskLevel.CRITICAL || riskLevel === RiskLevel.HIGH ? "HIGH" :
+          riskLevel === RiskLevel.MEDIUM ? "NORMAL" : "LOW";
+
+        const confidence = typeof parsed.confidence === "number" ? Math.min(Math.max(parsed.confidence, 0), 1) : 0.90;
+        const reasoning = parsed.reasoning || `Model-classified as ${labelKey} (${telemetry.modelSelected})`;
+
+        return {
+          kind: {
+            intent,
+            riskLevel,
+            productArea,
+            key: formatKindKey(intent, riskLevel, productArea)
+          },
+          confidence,
+          urgency,
+          reasoning,
+          requiresHumanReview,
+          riskFlags,
+          parentSettingType,
+          specificLabel,
+          labelKey,
+          alternativeCandidateLabel: parsed.alternativeCandidateLabel || undefined,
+          classificationModel: telemetry.modelSelected,
+          classificationProvider: telemetry.provider,
+          uncertaintyIndicator,
+          cleanedBody: cleaned.cleanedBody
+        };
+      }
+    } catch (err) {
+      console.warn("LLM classification failed; falling back to deterministic baseline:", err);
+    }
+
+    return {
+      ...baseline,
+      cleanedBody: cleaned.cleanedBody,
+      classificationModel: "deterministic_keyword_fallback",
+      classificationProvider: "deterministic",
+      uncertaintyIndicator: baseline.requiresHumanReview,
+      requiresHumanReview: baseline.requiresHumanReview
+    };
   }
 
   public getTaxonomy(): TaxonomyItem[] {
@@ -259,6 +409,7 @@ export class EmailClassifier {
       productArea = ProductArea.ACCOUNT_SECURITY;
     } else if (
       text.includes("stripe") ||
+      text.includes("stipe") ||
       text.includes("paypal") ||
       text.includes("payment gateway") ||
       text.includes("coupon") ||
@@ -443,10 +594,18 @@ export class EmailClassifier {
       riskLevel === RiskLevel.CRITICAL || riskLevel === RiskLevel.HIGH ? "HIGH" :
       riskLevel === RiskLevel.MEDIUM ? "NORMAL" : "LOW";
 
+    const isAmbiguous = text.length < 80 && (text.includes("not work") || text.includes("fix it") || text.includes("stuff"));
+    const isUnknown = highestScore === 0 && productArea === ProductArea.UNKNOWN && riskFlags.length === 0;
+
+    const uncertaintyIndicator = isAmbiguous || isUnknown;
+    const confidence = isAmbiguous || isUnknown ? 0.50 : riskFlags.length > 0 ? 0.98 : highestScore >= 3 ? 0.95 : 0.85;
+
     const requiresHumanReview =
       riskLevel === RiskLevel.HIGH ||
       riskLevel === RiskLevel.CRITICAL ||
-      riskFlags.length > 0;
+      riskFlags.length > 0 ||
+      isAmbiguous ||
+      isUnknown;
 
     const kindKey = formatKindKey(intent, riskLevel, productArea);
 
@@ -457,14 +616,15 @@ export class EmailClassifier {
         productArea,
         key: kindKey
       },
-      confidence: riskFlags.length > 0 ? 0.98 : highestScore >= 3 ? 0.95 : 0.85,
+      confidence,
       urgency,
       reasoning: `Classified as ${parentSettingType} -> ${specificLabel} (${intent}, ${productArea}) at ${riskLevel} risk level. Flags: [${riskFlags.join(", ")}]`,
       requiresHumanReview,
       riskFlags,
       parentSettingType,
       specificLabel,
-      labelKey
+      labelKey,
+      uncertaintyIndicator
     };
   }
 }

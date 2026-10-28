@@ -1,1 +1,27 @@
-[]
+[
+  {
+    "labelKey": "General Settings -> Site Details",
+    "parentSettingType": "General Settings",
+    "specificLabel": "Site Details",
+    "unchangedStreak": 1,
+    "requiredThreshold": 3,
+    "autonomyEnabled": false,
+    "disabledByUser": false,
+    "totalDrafts": 1,
+    "totalSentWithoutChanges": 1,
+    "updatedAt": "2026-10-27T14:14:42.217Z"
+  },
+  {
+    "labelKey": "Finance -> Payment Gateways",
+    "parentSettingType": "Finance",
+    "specificLabel": "Payment Gateways",
+    "unchangedStreak": 0,
+    "requiredThreshold": 3,
+    "autonomyEnabled": false,
+    "disabledByUser": false,
+    "totalDrafts": 30,
+    "totalSentWithoutChanges": 20,
+    "updatedAt": "2026-10-28T05:49:53.488Z",
+    "lastFailureReason": "Human rejected draft (Quality rejection)"
+  }
+]

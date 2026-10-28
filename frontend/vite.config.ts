@@ -11,6 +11,7 @@ export default defineConfig({
       '/api/v1/refresh-runs': 'http://localhost:8000',
       '/api/v1/quarantine': 'http://localhost:8000',
       '/api/v1/health-observations': 'http://localhost:8000',
+      '/api/v1/settings/gemini': 'http://localhost:3000',
       '/api/v1/settings': 'http://localhost:8000',
       '/api/v1/auth': 'http://localhost:8000',
       '/api/v1/ask': 'http://localhost:8000',
@@ -21,6 +22,7 @@ export default defineConfig({
       '/api/v1/taxonomy': 'http://localhost:3000',
       '/api/v1/gmail': 'http://localhost:3000',
       '/api/v1/feedback': 'http://localhost:3000',
+      '/api/v1/projects': 'http://localhost:8002',
     }
   }
 })

@@ -117,3 +117,46 @@ async def test_transcript_prompt_injection_cannot_self_approve(test_setup):
     # API gate remains locked
     res = client.get("/api/v1/projects/proj_inject_test/proposal")
     assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_projects_and_export_gating(test_setup):
+    orch, client = test_setup
+
+    scope = await orch.create_project_from_meeting(
+        "Client: We need automated email sequences on signup.",
+        project_id="proj_export_test"
+    )
+
+    # 1. List projects returns newly created project
+    list_res = client.get("/api/v1/projects")
+    assert list_res.status_code == 200
+    projects = list_res.json()
+    assert any(p["project_id"] == "proj_export_test" for p in projects)
+
+    # 2. Export unapproved without ?draft=true is blocked with 403
+    unapproved_export = client.get("/api/v1/projects/proj_export_test/export")
+    assert unapproved_export.status_code == 403
+    assert "unapproved internal draft" in unapproved_export.json()["detail"]
+
+    # 3. Export unapproved with ?draft=true succeeds with DRAFT header & watermark
+    draft_export = client.get("/api/v1/projects/proj_export_test/export?draft=true&format=html")
+    assert draft_export.status_code == 200
+    assert draft_export.headers.get("x-sow-status") == "DRAFT"
+    assert "INTERNAL DRAFT" in draft_export.text
+
+    # Markdown export draft
+    draft_md = client.get("/api/v1/projects/proj_export_test/export?draft=true&format=markdown")
+    assert draft_md.status_code == 200
+    assert "DRAFT STATEMENT OF WORK" in draft_md.text
+
+    # 4. Approve project
+    approve_res = client.post("/api/v1/projects/proj_export_test/approve", json={"approved_by": "Alex Morgan"})
+    assert approve_res.status_code == 200
+
+    # 5. Final export without draft=true now succeeds with APPROVED header
+    approved_export = client.get("/api/v1/projects/proj_export_test/export?format=html")
+    assert approved_export.status_code == 200
+    assert approved_export.headers.get("x-sow-status") == "APPROVED"
+    assert "APPROVED &amp; CLIENT READY" in approved_export.text
+    assert "Alex Morgan" in approved_export.text

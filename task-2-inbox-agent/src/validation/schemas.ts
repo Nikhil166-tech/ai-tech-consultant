@@ -1,4 +1,4 @@
-﻿import { z } from "zod";
+import { z } from "zod";
 
 export const CustomerEmailSchema = z.object({
   id: z.string().min(1, "Email id is required"),
@@ -15,7 +15,8 @@ export const ReviewSubmissionSchema = z.object({
   action: ReviewActionSchema,
   reviewerId: z.string().min(1, "reviewerId is required"),
   finalReply: z.string().optional(),
-  notes: z.string().optional()
+  notes: z.string().optional(),
+  sendViaGmail: z.boolean().optional().default(false)
 });
 
 export const AutonomyRevocationSchema = z.object({

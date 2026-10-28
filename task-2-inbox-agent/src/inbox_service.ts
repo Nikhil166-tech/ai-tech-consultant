@@ -61,8 +61,8 @@ export class InboxService {
     }
     const email: CustomerEmail = parsed.data;
 
-    // 2. Classification
-    const classification = this.classifier.classify(email);
+    // 2. Classification (AI Model-based with deterministic safety guardrails)
+    const classification = await this.classifier.classifyAsync(email);
     const kind = classification.kind;
 
     // 3. Query Task 1 Knowledge Brain (bypassed if prompt injection is detected)

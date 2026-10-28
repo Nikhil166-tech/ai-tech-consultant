@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { SitemapItem, SitemapPreview, IndexingEstimate } from "../types";
+import { api } from "../api";
 import { Globe, Plus, Eye, Play, AlertCircle, Clock, CheckCircle2, ChevronRight, RefreshCw, Calendar, ExternalLink } from "lucide-react";
 
 interface SitemapManagementViewProps {
@@ -129,58 +130,118 @@ export const SitemapManagementView: React.FC<SitemapManagementViewProps> = ({
             <p>Click "Add New Sitemap" to validate and preview your documentation inventory.</p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-800/80">
-            {sitemaps.map((sm) => (
-              <div key={sm.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/30 transition">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={sm.url || sm.root_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs font-bold text-sky-400 hover:text-sky-300 hover:underline font-mono flex items-center gap-1.5"
+              <div className="divide-y divide-slate-800/80">
+            {sitemaps.map((sm) => {
+              const isPaused = sm.schedule_status === "paused";
+              const isDisabled = sm.schedule_status === "disabled";
+              const statusColor = isDisabled
+                ? "bg-slate-800 text-slate-400 border-slate-700"
+                : isPaused
+                ? "bg-amber-950 text-amber-300 border-amber-800/60"
+                : "bg-emerald-950 text-emerald-300 border-emerald-800/60";
+
+              return (
+                <div key={sm.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/30 transition">
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a
+                        href={sm.url || sm.root_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-bold text-sky-400 hover:text-sky-300 hover:underline font-mono flex items-center gap-1.5"
+                      >
+                        <span>{sm.name || sm.url || sm.root_url}</span>
+                        <ExternalLink className="w-3 h-3 text-slate-400" />
+                      </a>
+                      <span
+                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                          (sm.status || "").toLowerCase() === "active" || (sm.status || "").toLowerCase() === "confirmed" || (sm.status || "").toLowerCase() === "valid"
+                            ? "bg-emerald-950 text-emerald-300 border border-emerald-800/60"
+                            : "bg-sky-950 text-sky-300 border border-sky-800/60"
+                        }`}
+                      >
+                        {sm.status}
+                      </span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-medium border flex items-center gap-1 ${statusColor}`}>
+                        <Clock className="w-3 h-3" />
+                        Schedule: <span className="uppercase font-bold">{sm.schedule_status || "active"}</span>
+                      </span>
+                      <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-medium flex items-center gap-1">
+                        <Calendar className="w-3 h-3 text-sky-400" />
+                        {sm.refresh_interval || (sm.refresh_interval_days ? `Every ${sm.refresh_interval_days}d` : "daily")}
+                      </span>
+                    </div>
+
+                    <span className="text-[11px] text-slate-400 font-mono block truncate max-w-lg">
+                      {sm.url || sm.root_url}
+                    </span>
+
+                    <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+                      <span>Discovered: <strong className="text-slate-200">{sm.discovered_sitemaps_count}</strong></span>
+                      <span>•</span>
+                      <span>Total URLs: <strong className="text-slate-200">{sm.total_urls_count}</strong></span>
+                      <span>•</span>
+                      <span>Next Run: <strong className="text-sky-300">{sm.next_refresh_at ? new Date(sm.next_refresh_at).toLocaleString() : "Scheduled by engine"}</strong></span>
+                      <span>•</span>
+                      <span>Last Run: {sm.last_refresh_completed_at ? new Date(sm.last_refresh_completed_at).toLocaleString() : (sm.last_validated_at ? new Date(sm.last_validated_at).toLocaleDateString() : "Never")}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Schedule Interval Dropdown */}
+                    <select
+                      value={sm.refresh_interval_days ? (sm.refresh_interval_days === 1 ? "daily" : sm.refresh_interval_days === 7 ? "weekly" : `${sm.refresh_interval_days}_days`) : (sm.refresh_interval || "daily")}
+                      onChange={async (e) => {
+                        const newInterval = e.target.value;
+                        try {
+                          await api.updateSitemapSchedule(sm.id, newInterval, (sm.schedule_status as any) || "active");
+                          onRefreshData();
+                        } catch (err: any) {
+                          alert(`Schedule update failed: ${err.message}`);
+                        }
+                      }}
+                      className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
                     >
-                      <span>{sm.name || sm.url || sm.root_url}</span>
-                      <ExternalLink className="w-3 h-3 text-slate-400" />
-                    </a>
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                        (sm.status || "").toLowerCase() === "active" || (sm.status || "").toLowerCase() === "confirmed" || (sm.status || "").toLowerCase() === "valid"
-                          ? "bg-emerald-950 text-emerald-300 border border-emerald-800/60"
-                          : "bg-sky-950 text-sky-300 border border-sky-800/60"
+                      <option value="daily">Daily</option>
+                      <option value="weekly">7 Days</option>
+                      <option value="15_days">15 Days</option>
+                      <option value="30_days">30 Days</option>
+                    </select>
+
+                    {/* Schedule Status Toggle: Active / Paused / Disabled */}
+                    <button
+                      onClick={async () => {
+                        const nextStatus = isPaused ? "active" : "paused";
+                        try {
+                          const curInterval = sm.refresh_interval || (sm.refresh_interval_days ? `${sm.refresh_interval_days}_days` : "daily");
+                          await api.updateSitemapSchedule(sm.id, curInterval, nextStatus);
+                          onRefreshData();
+                        } catch (err: any) {
+                          alert(`Status update failed: ${err.message}`);
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition ${
+                        isPaused
+                          ? "bg-emerald-950/70 border-emerald-700 text-emerald-300 hover:bg-emerald-900/60"
+                          : "bg-amber-950/70 border-amber-700 text-amber-300 hover:bg-amber-900/60"
                       }`}
+                      title={isPaused ? "Resume automatic scheduling" : "Pause scheduled refreshes"}
                     >
-                      {sm.status}
-                    </span>
-                    <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-medium flex items-center gap-1">
-                      <Calendar className="w-3 h-3 text-sky-400" />
-                      {sm.refresh_interval || (sm.refresh_interval_days ? `${sm.refresh_interval_days}d` : "daily")}
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-slate-400 font-mono block truncate max-w-lg">
-                    {sm.url || sm.root_url}
-                  </span>
+                      {isPaused ? "Resume" : "Pause"}
+                    </button>
 
-                  <div className="flex items-center gap-4 text-xs text-slate-400">
-                    <span>Discovered: <strong className="text-slate-200">{sm.discovered_sitemaps_count}</strong> sitemaps</span>
-                    <span>•</span>
-                    <span>Total URLs: <strong className="text-slate-200">{sm.total_urls_count}</strong></span>
-                    <span>•</span>
-                    <span>Last Validated: {sm.last_validated_at ? new Date(sm.last_validated_at).toLocaleDateString() : "Never"}</span>
+                    <button
+                      onClick={() => onTriggerRefresh(sm.id)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow-sm transition"
+                      title="Run manual refresh immediately without altering the automatic schedule"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>Refresh Now</span>
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => onTriggerRefresh(sm.id)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition"
-                  >
-                    <Play className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Run Refresh Now</span>
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

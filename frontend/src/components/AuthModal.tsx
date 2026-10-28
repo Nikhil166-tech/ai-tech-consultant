@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { User } from "../types";
 import { ShieldCheck, User as UserIcon, Lock, Mail, AlertCircle } from "lucide-react";
+import { api } from "../api";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -43,15 +44,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, 
     setIsLoading(true);
     setError(null);
     try {
-      await onLogin("demo.consultant@brilliantdirectories.com", "DemoPassword123!");
+      const res = await api.demoLogin();
+      // Trigger user state reload through onLogin or direct close
+      await onLogin("demo.consultant@brilliantdirectories.com", "DemoPassword123!").catch(() => res.user);
       onClose();
     } catch {
-      // If demo user does not exist yet, register it!
       try {
-        await onRegister("demo.consultant@brilliantdirectories.com", "DemoPassword123!");
+        await onLogin("demo.consultant@brilliantdirectories.com", "DemoPassword123!");
         onClose();
-      } catch (regErr: any) {
-        setError(regErr?.message || "Demo account login failed");
+      } catch (err: any) {
+        setError(err?.message || "Demo account login failed");
       }
     } finally {
       setIsLoading(false);

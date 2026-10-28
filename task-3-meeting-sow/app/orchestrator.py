@@ -131,7 +131,7 @@ class PipelineOrchestrator:
         self.store = store or ProjectStore()
 
     async def create_project_from_meeting(
-        self, transcript: str, project_id: str | None = None
+        self, transcript: str, project_id: str | None = None, user_id: str | None = None
     ) -> ProjectScope:
         proj_id = project_id or f"proj_{uuid.uuid4().hex[:8]}"
 
@@ -150,6 +150,7 @@ class PipelineOrchestrator:
         # 4. Construct Initial ProjectScope
         scope = ProjectScope(
             project_id=proj_id,
+            user_id=user_id,
             version=1,
             meeting_count=1,
             client_goal=analysis["client_goal"],

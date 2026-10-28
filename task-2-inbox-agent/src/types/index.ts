@@ -59,6 +59,11 @@ export interface EmailClassification {
   parentSettingType: string;
   specificLabel: string;
   labelKey: string; // e.g. "Design Settings -> Header"
+  alternativeCandidateLabel?: string;
+  classificationModel?: string;
+  classificationProvider?: string;
+  uncertaintyIndicator?: boolean;
+  cleanedBody?: string;
 }
 
 export interface Task1Citation {
@@ -137,9 +142,11 @@ export interface AutomaticDeliveryRecord {
 }
 
 export type InteractionStatus = "PENDING_REVIEW" | "AUTO_SENT" | "APPROVED" | "EDITED" | "REJECTED";
+export type EmailFolder = "INBOX" | "DRAFTS" | "SENT" | "SPAM" | "TRASH";
 
 export interface InteractionRecord {
   id: string; // matches draft.id or email.id
+  folder?: EmailFolder;
   email: CustomerEmail;
   classification: EmailClassification;
   task1Status: {

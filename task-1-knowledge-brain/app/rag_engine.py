@@ -9,8 +9,13 @@ from app.models import (
 from app.database import Database
 from app.retrieval import HybridRetriever, BaseEmbeddingProvider
 from app.config import settings
+from app.fallback_engine import ModelFallbackEngine, STABLE_GEMINI_MODELS, STABLE_CLAUDE_MODELS
 
 logger = logging.getLogger(__name__)
+
+# Active production models (deprecated models excluded)
+LATEST_GEMINI_MODELS = STABLE_GEMINI_MODELS
+LATEST_CLAUDE_MODELS = STABLE_CLAUDE_MODELS
 
 class HybridRAGEngine:
     def __init__(
@@ -23,6 +28,7 @@ class HybridRAGEngine:
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "") or settings.gemini_api_key
         self.gemini_model = os.getenv("GEMINI_MODEL_TEXT", settings.gemini_model_text)
         self.api_key = anthropic_api_key or settings.anthropic_api_key
+        self.anthropic_api_key = self.api_key
         self.model = settings.anthropic_model_text
         self.retriever = HybridRetriever(embedding_provider=embedding_provider, db=self.db)
         self.client = None
@@ -39,13 +45,39 @@ class HybridRAGEngine:
     def normalize_query(self, query: str) -> str:
         """
         Normalizes user questions:
+        - Corrects common typos and phonetic variations
         - Strips punctuation and excessive whitespace
         - Recognizes platform synonyms (e.g. DNS / nameservers, exports / CSV, subscriptions / recurring)
         - Prepares suitable hybrid retrieval tokens
         """
         clean = re.sub(r"[^\w\s\-\.]", " ", query.lower()).strip()
+        
+        # Correct common customer typos and phonetic variants
+        typo_map = [
+            (r"\bstipe\b", "stripe"),
+            (r"\bstriipe\b", "stripe"),
+            (r"\bsubcription\b", "subscription"),
+            (r"\bsubscripton\b", "subscription"),
+            (r"\bhedaer\b", "header"),
+            (r"\bheadaer\b", "header"),
+            (r"\bfootr\b", "footer"),
+            (r"\bfotter\b", "footer"),
+            (r"\bdoman\b", "domain"),
+            (r"\bdomian\b", "domain"),
+            (r"\brecptcha\b", "recaptcha"),
+            (r"\braduis\b", "radius"),
+            (r"\bredius\b", "radius"),
+            (r"\bmasthead\b", "header branding logo"),
+            (r"\bbranding\s+image\b", "header branding logo"),
+            (r"\btop\s+logo\b", "header branding logo"),
+            (r"\bbottom\s+links\b", "footer copyright menu"),
+            (r"\bcredit\s+card\s+processor\b", "stripe payment gateway"),
+        ]
+        for pattern, replacement in typo_map:
+            clean = re.sub(pattern, replacement, clean)
+
         expansions = []
-        if re.search(r"\b(payments?|gateway|credit\s+cards?|checkout)\b", clean):
+        if re.search(r"\b(payments?|gateway|credit\s+cards?|checkout|stripe)\b", clean):
             expansions.append("stripe payment gateway checkout")
         if re.search(r"\b(subscriptions?|recurring|recurring\s+billing)\b", clean):
             expansions.append("subscription membership recurring payment")
@@ -108,8 +140,20 @@ class HybridRAGEngine:
         active_model = model or self.model
         chunks = self.db.get_all_chunks()
 
-        # Phase 5: Query normalization with synonym handling
+        # Phase E: Conversation history contextual resolution for elliptical queries
         retrieval_query = self.normalize_query(request.question)
+        if request.history:
+            lower_q = request.question.lower()
+            elliptical = any(p in lower_q for p in ["it", "that", "this", "these", "those", "how do i do that", "where is it", "turn it on", "set that up"])
+            if elliptical or len(lower_q.split()) <= 4:
+                for turn in reversed(request.history):
+                    turn_content = turn.get("content", "")
+                    if turn_content:
+                        context_norm = self.normalize_query(turn_content)
+                        tokens = [t for t in context_norm.split() if len(t) > 3][:6]
+                        if tokens:
+                            retrieval_query = f"{retrieval_query} {' '.join(tokens)}"
+                            break
 
         hybrid_results = self.retriever.retrieve(
             query=retrieval_query,
@@ -188,70 +232,39 @@ class HybridRAGEngine:
             "5. Keep the response polite, accurate, and concise."
         )
 
-        # 1. Try Google Gemini API Workflow
-        gemini_key = os.getenv("GEMINI_API_KEY", self.gemini_api_key)
-        if gemini_key and not gemini_key.startswith("sk-ant-"):
-            try:
-                import httpx
-                gemini_model = os.getenv("GEMINI_MODEL_TEXT", os.getenv("GEMINI_MODEL", self.gemini_model)) or "gemini-3.5-flash"
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}"
-                
-                contents = []
-                if request.history:
-                    for h in request.history[-4:]:
-                        role = "user" if h.get("role") == "user" else "model"
-                        content = h.get("content", "")
-                        if content:
-                            contents.append({"role": role, "parts": [{"text": content}]})
+        # Execute generation via Production Model Fallback Engine
+        user_prompt = f"Documentation Evidence:\n{evidence_str}\n\nCustomer Question: {request.question}"
+        
+        # Prepare normalized conversation history
+        history_msgs = []
+        if request.history:
+            for h in request.history[-4:]:
+                role = "user" if h.get("role") == "user" else "model"
+                content = h.get("content", "")
+                if content:
+                    history_msgs.append({"role": role, "content": content})
 
-                user_prompt = f"Documentation Evidence:\n{evidence_str}\n\nCustomer Question: {request.question}"
-                contents.append({"role": "user", "parts": [{"text": user_prompt}]})
+        fallback_engine = ModelFallbackEngine(
+            role="KNOWLEDGE_ANSWER",
+            gemini_api_key=self.gemini_api_key,
+            anthropic_api_key=self.anthropic_api_key,
+            anthropic_workspace_id=settings.anthropic_workspace_id
+        )
 
-                payload = {
-                    "contents": contents,
-                    "systemInstruction": {"parts": [{"text": system_prompt}]},
-                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800}
-                }
-                async with httpx.AsyncClient(timeout=20.0) as http_client:
-                    res = await http_client.post(url, json=payload)
-                    if res.status_code == 200:
-                        data = res.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                answer_text = parts[0].get("text", "").strip()
-                    else:
-                        logger.warning(f"Gemini API returned HTTP {res.status_code}: {res.text}")
-            except Exception as e:
-                logger.warning(f"Gemini API synthesis failed or offline: {e}")
+        raw_answer, _, telemetry = await fallback_engine.execute_with_fallback(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history=history_msgs,
+            max_tokens=800,
+            temperature=0.2
+        )
 
-        # 2. Fallback to Claude API if answer_text is not yet generated and client is available
-        if not answer_text and self.client:
-            try:
-                # Format conversation history
-                messages = []
-                if request.history:
-                    for h in request.history[-4:]:
-                        role = h.get("role", "user")
-                        content = h.get("content", "")
-                        if role in ("user", "assistant") and content:
-                            messages.append({"role": role, "content": content})
+        if raw_answer:
+            answer_text = raw_answer
 
-                user_prompt = f"Documentation Evidence:\n{evidence_str}\n\nCustomer Question: {request.question}"
-                messages.append({"role": "user", "content": user_prompt})
-
-                response = self.client.messages.create(
-                    model=active_model,
-                    max_tokens=600,
-                    system=system_prompt,
-                    messages=messages
-                )
-                answer_text = response.content[0].text.strip()
-            except Exception as e:
-                logger.warning(f"Claude API synthesis failed or offline: {e}")
-
+        # If all AI models fail or are unavailable, fall back to grounded deterministic documentation citation
         if not answer_text:
+            logger.info("All AI models failed or unavailable; falling back to grounded deterministic documentation citation")
             top_chunk = hybrid_results[0][0]
             clean_snippet = self._sanitize_untrusted_evidence(top_chunk.text)
             provenance_prefix = ""
@@ -275,5 +288,6 @@ class HybridRAGEngine:
             is_known=True,
             needs_human_review=False,
             expert_task_id=None,
-            visual_references=visual_refs[:3]
+            visual_references=visual_refs[:3],
+            telemetry=telemetry.model_dump()
         )

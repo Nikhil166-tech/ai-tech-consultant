@@ -1,4 +1,4 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
@@ -7,10 +7,87 @@ import { CustomerEmailSchema, ReviewSubmissionSchema, AutonomyRevocationSchema }
 
 export function createServer(inboxService?: InboxService) {
   const app = express();
-  app.use(cors());
+
+  const rawOrigins = process.env.ALLOWED_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000";
+  const allowedOrigins = rawOrigins.split(",").map((s) => s.trim()).filter(Boolean);
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes("*")) {
+          callback(null, true);
+        } else {
+          callback(new Error(`Origin ${origin} not allowed by CORS`));
+        }
+      },
+      credentials: true
+    })
+  );
   app.use(express.json());
 
   const service = inboxService || new InboxService();
+  const task1Url = process.env.TASK1_URL || "http://127.0.0.1:8000";
+
+  // Authentication Middleware for Task 2 Protected Endpoints
+  const authenticateRequest = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // 1. Check internal service key (for direct server-to-server calls)
+    const internalKey = req.headers["x-internal-service-key"] as string | undefined;
+    const expectedInternalKey = process.env.INTERNAL_SERVICE_KEY || "";
+    if (internalKey) {
+      if (internalKey === expectedInternalKey) {
+        (req as any).user = { id: "service_internal", role: "service" };
+        return next();
+      }
+      res.status(401).json({ error: "Invalid internal service key" });
+      return;
+    }
+
+    // 2. Extract session_id from cookie or Bearer authorization header
+    let sessionId: string | undefined;
+    if (req.headers.cookie) {
+      const match = req.headers.cookie.match(/(?:^|;\s*)session_id=([^;]+)/);
+      if (match) sessionId = match[1];
+    }
+    if (!sessionId && req.headers.authorization?.startsWith("Bearer ")) {
+      sessionId = req.headers.authorization.slice(7).trim();
+    }
+
+    if (!sessionId) {
+      if (process.env.ENVIRONMENT === "production") {
+        res.status(401).json({ error: "Authentication required. Please sign in." });
+        return;
+      }
+      // In development mode when no credentials are provided at all
+      (req as any).user = { id: "dev_user", role: "user" };
+      return next();
+    }
+
+    // 3. Validate session against Task 1
+    try {
+      const authRes = await fetch(`${task1Url}/api/v1/auth/me`, {
+        headers: {
+          "Cookie": `session_id=${sessionId}`,
+          "Authorization": `Bearer ${sessionId}`
+        }
+      });
+      if (authRes.ok) {
+        const data: any = await authRes.json();
+        (req as any).user = data.user;
+        return next();
+      } else {
+        res.status(401).json({ error: "Session has expired or is invalid. Please sign in again." });
+        return;
+      }
+    } catch (err: any) {
+      // In test environment, if task 1 is not running, fallback to dev_user
+      if (process.env.NODE_ENV === "test" || process.env.ENVIRONMENT !== "production") {
+        (req as any).user = { id: "dev_user", role: "user" };
+        return next();
+      }
+      res.status(502).json({ error: `Authentication service unavailable: ${err.message}` });
+      return;
+    }
+  };
 
   // Health check
   app.get("/health", (_req: Request, res: Response): void => {
@@ -22,7 +99,6 @@ export function createServer(inboxService?: InboxService) {
   });
 
   // Proxy Task 1 Knowledge Brain routes when accessed through unified server (e.g. port 3000)
-  const task1Url = process.env.TASK1_URL || "http://localhost:8000";
   const task1Prefixes = [
     "/api/v1/sitemaps",
     "/api/v1/refresh-runs",
@@ -46,6 +122,10 @@ export function createServer(inboxService?: InboxService) {
         }
         if (req.headers.cookie) headers["Cookie"] = req.headers.cookie as string;
         if (req.headers.authorization) headers["Authorization"] = req.headers.authorization as string;
+        if (req.headers["x-csrf-token"]) headers["X-CSRF-Token"] = req.headers["x-csrf-token"] as string;
+        // CRITICAL SECURITY HARDENING:
+        // Do NOT inject or forward external client X-Internal-Service-Key through the browser proxy!
+        // Client requests must authenticate via user cookies or Authorization Bearer header.
 
         const response = await fetch(targetUrl, {
           method: req.method,
@@ -70,6 +150,66 @@ export function createServer(inboxService?: InboxService) {
       }
     });
   }
+
+  // Proxy Task 3 Meeting-to-SOW routes
+  const task3Url = process.env.TASK3_URL || "http://127.0.0.1:8002";
+  app.all("/api/v1/projects*", async (req: Request, res: Response): Promise<void> => {
+    try {
+      const targetUrl = `${task3Url}${req.originalUrl}`;
+      const headers: Record<string, string> = {};
+      if (req.headers["content-type"]) {
+        headers["Content-Type"] = req.headers["content-type"] as string;
+      } else if (["POST", "PUT", "PATCH"].includes(req.method)) {
+        headers["Content-Type"] = "application/json";
+      }
+      if (req.headers.cookie) headers["Cookie"] = req.headers.cookie as string;
+      if (req.headers.authorization) headers["Authorization"] = req.headers.authorization as string;
+      if (req.headers["x-csrf-token"]) headers["X-CSRF-Token"] = req.headers["x-csrf-token"] as string;
+      if (req.headers["x-internal-service-key"]) headers["x-internal-service-key"] = req.headers["x-internal-service-key"] as string;
+
+      const response = await fetch(targetUrl, {
+        method: req.method,
+        headers,
+        body: ["POST", "PUT", "PATCH"].includes(req.method) ? JSON.stringify(req.body) : undefined
+      });
+
+      res.status(response.status);
+      const disposition = response.headers.get("content-disposition");
+      if (disposition) res.setHeader("content-disposition", disposition);
+      const sowStatus = response.headers.get("x-sow-status");
+      if (sowStatus) res.setHeader("x-sow-status", sowStatus);
+
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        const text = await response.text();
+        res.setHeader("content-type", contentType);
+        res.send(text);
+      }
+    } catch (err: any) {
+      res.status(502).json({ error: `Failed to proxy to Task 3 Meeting SOW at ${task3Url}: ${err.message}` });
+    }
+  });
+
+  // Enforce authentication on all protected Task 2 routes
+  app.use((req: Request, res: Response, next: NextFunction): void => {
+    const isTask2Protected =
+      req.path.startsWith("/api/v1/emails") ||
+      req.path.startsWith("/api/v1/inbox") ||
+      req.path.startsWith("/api/v1/autonomy") ||
+      req.path.startsWith("/api/v1/taxonomy") ||
+      req.path.startsWith("/api/v1/feedback") ||
+      req.path.startsWith("/api/v1/settings/gemini") ||
+      (req.path.startsWith("/api/v1/gmail") && !req.path.startsWith("/api/v1/gmail/callback"));
+
+    if (isTask2Protected) {
+      authenticateRequest(req, res, next);
+    } else {
+      next();
+    }
+  });
 
   // 1. Process customer email
   app.post("/api/v1/emails/process", async (req: Request, res: Response): Promise<void> => {
@@ -100,14 +240,14 @@ export function createServer(inboxService?: InboxService) {
   // 3. Submit human review
   app.post("/api/v1/inbox/review", (req: Request, res: Response): void => {
     try {
-      const { interactionId, action, reviewerId, finalReply, notes } = req.body;
+      const { interactionId, action, reviewerId, finalReply, notes, sendViaGmail } = req.body;
 
       if (!interactionId || typeof interactionId !== "string") {
         res.status(400).json({ error: "interactionId string is required" });
         return;
       }
 
-      const parseResult = ReviewSubmissionSchema.safeParse({ action, reviewerId, finalReply, notes });
+      const parseResult = ReviewSubmissionSchema.safeParse({ action, reviewerId, finalReply, notes, sendViaGmail });
       if (!parseResult.success) {
         res.status(400).json({
           error: "Invalid review submission",
@@ -117,7 +257,16 @@ export function createServer(inboxService?: InboxService) {
       }
 
       const result = service.submitReview(interactionId, parseResult.data);
-      res.json(result);
+      // In STEP 1, live auto-sending remains staged/disabled.
+      // Explicitly return gmailDelivery status so caller is never misled.
+      const gmailDelivery = parseResult.data.sendViaGmail
+        ? { staged: true, sent: false, note: "Gmail delivery staged; live automated sending is disabled in STEP 1" }
+        : { staged: false, sent: false, note: "Manual review only; Gmail delivery not requested" };
+
+      res.json({
+        ...result,
+        gmailDelivery
+      });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "Review submission failed" });
     }
@@ -304,6 +453,142 @@ export function createServer(inboxService?: InboxService) {
     res.json(service.interactionStore.getAllInteractions());
   });
 
+  // Folder actions: Trash, Restore, Spam, Delete Forever
+  app.post("/api/v1/inbox/:id/trash", (req: Request, res: Response): void => {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const updated = service.interactionStore.moveToFolder(id, "TRASH");
+    if (!updated) {
+      res.status(404).json({ error: `Interaction '${id}' not found` });
+      return;
+    }
+    res.json({ success: true, folder: "TRASH", interaction: updated });
+  });
+
+  app.post("/api/v1/inbox/:id/restore", (req: Request, res: Response): void => {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const updated = service.interactionStore.moveToFolder(id, "INBOX");
+    if (!updated) {
+      res.status(404).json({ error: `Interaction '${id}' not found` });
+      return;
+    }
+    res.json({ success: true, folder: "INBOX", interaction: updated });
+  });
+
+  app.post("/api/v1/inbox/:id/spam", (req: Request, res: Response): void => {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const existing = service.interactionStore.getInteraction(id);
+    if (!existing) {
+      res.status(404).json({ error: `Interaction '${id}' not found` });
+      return;
+    }
+    const newFolder = existing.folder === "SPAM" ? "INBOX" : "SPAM";
+    const updated = service.interactionStore.moveToFolder(id, newFolder);
+    res.json({ success: true, folder: newFolder, interaction: updated });
+  });
+
+  app.delete("/api/v1/inbox/:id/forever", (req: Request, res: Response): void => {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const deleted = service.interactionStore.deleteInteraction(id);
+    if (!deleted) {
+      res.status(404).json({ error: `Interaction '${id}' not found` });
+      return;
+    }
+    res.json({ success: true, message: `Interaction '${id}' deleted permanently.` });
+  });
+
+  // Real Outgoing Message Compose & Drafts
+  app.post("/api/v1/inbox/compose", async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { to, subject, body, saveDraft, sendViaGmail } = req.body;
+      if (!to || !subject || !body) {
+        res.status(400).json({ error: "'to', 'subject', and 'body' fields are required" });
+        return;
+      }
+
+      const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const now = new Date().toISOString();
+      const isDraft = Boolean(saveDraft);
+
+      let gmailMessageId: string | undefined;
+      const finalFolder = isDraft ? "DRAFTS" : "SENT";
+      const status = isDraft ? "PENDING_REVIEW" : "APPROVED";
+
+      if (!isDraft && sendViaGmail) {
+        if (service.gmailClient.isConnected()) {
+          const sent = await service.gmailClient.sendEmail({
+            to,
+            subject,
+            body
+          });
+          gmailMessageId = sent.messageId;
+        }
+      }
+
+      const interaction: any = {
+        id,
+        folder: finalFolder,
+        email: {
+          id,
+          senderEmail: to,
+          subject,
+          body,
+          receivedAt: now
+        },
+        classification: {
+          kind: {
+            intent: "GENERAL_INQUIRY",
+            riskLevel: "LOW",
+            productArea: "UNKNOWN",
+            key: "GENERAL_INQUIRY:LOW:UNKNOWN"
+          },
+          confidence: 1.0,
+          urgency: "NORMAL",
+          reasoning: "User-composed outgoing message",
+          requiresHumanReview: false,
+          riskFlags: [],
+          parentSettingType: "Outgoing Messages",
+          specificLabel: isDraft ? "Draft" : "Sent",
+          labelKey: isDraft ? "Outgoing -> Draft" : "Outgoing -> Sent"
+        },
+        task1Status: {
+          success: true,
+          isAvailable: true,
+          evidenceScore: 1.0,
+          evidenceStatus: "STRONG",
+          needsHumanReview: false
+        },
+        draft: {
+          id: `draft_${id}`,
+          emailId: id,
+          subject,
+          body,
+          generatedAt: now,
+          promptVersion: "v1_baseline",
+          knowledgeEvidenceScore: 1.0,
+          citations: [],
+          autoSendEligible: false
+        },
+        promptVersion: "v1_baseline",
+        routingDecision: "HUMAN_REVIEW_QUEUE",
+        status,
+        finalSentReply: isDraft ? undefined : body,
+        gmailMessageId,
+        createdAt: now,
+        updatedAt: now
+      };
+
+      service.interactionStore.saveInteraction(interaction);
+      res.json({
+        success: true,
+        isDraft,
+        folder: finalFolder,
+        interaction
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to compose message" });
+    }
+  });
+
   // 11. Gemini API Configuration & Verification
   app.get("/api/v1/settings/gemini", (_req: Request, res: Response): void => {
     const key = process.env.GEMINI_API_KEY || (service.draftGenerator.apiKey && !service.draftGenerator.apiKey.startsWith("sk-ant-") ? service.draftGenerator.apiKey : "");
@@ -345,10 +630,12 @@ export function createServer(inboxService?: InboxService) {
           verificationMessage = "Google Gemini API key verified and working!";
         } else {
           const errBody = await testRes.text().catch(() => "");
-          verificationMessage = `Key saved, but Gemini verification returned HTTP ${testRes.status}: ${errBody}`;
+          const safeErr = errBody.replace(new RegExp(apiKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), "[REDACTED_API_KEY]");
+          verificationMessage = `Key saved, but Gemini verification returned HTTP ${testRes.status}: ${safeErr.slice(0, 150)}`;
         }
       } catch (err: any) {
-        verificationMessage = `Key saved, but verification test failed: ${err.message}`;
+        const safeMsg = (err?.message || "").replace(new RegExp(apiKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), "[REDACTED_API_KEY]");
+        verificationMessage = `Key saved, but verification test failed: ${safeMsg}`;
       }
 
       // Update runtime environment & draftGenerator
@@ -357,34 +644,25 @@ export function createServer(inboxService?: InboxService) {
       service.draftGenerator.apiKey = apiKey;
       service.draftGenerator.model = model;
 
-      // Persist to .env files
-      const envPaths = [
-        path.resolve(process.cwd(), ".env"),
-        path.resolve(process.cwd(), "../.env"),
-        path.resolve(process.cwd(), "../task-1-knowledge-brain/.env"),
-        path.resolve(process.cwd(), "../task-2-inbox-agent/.env"),
-        path.resolve(process.cwd(), "../task-3-meeting-sow/.env")
-      ];
-
-      for (const p of envPaths) {
-        try {
-          if (fs.existsSync(p)) {
-            let content = fs.readFileSync(p, "utf-8");
-            if (content.includes("GEMINI_API_KEY=")) {
-              content = content.replace(/GEMINI_API_KEY=.*/g, `GEMINI_API_KEY=${apiKey}`);
-            } else {
-              content += `\nGEMINI_API_KEY=${apiKey}\n`;
-            }
-            if (content.includes("GEMINI_MODEL=")) {
-              content = content.replace(/GEMINI_MODEL=.*/g, `GEMINI_MODEL=${model}`);
-            } else {
-              content += `GEMINI_MODEL=${model}\n`;
-            }
-            fs.writeFileSync(p, content, "utf-8");
+      // Persist only to local service .env file if it exists; eliminate unauthorized writes across sibling folders
+      const localEnvPath = path.resolve(process.cwd(), ".env");
+      try {
+        if (fs.existsSync(localEnvPath)) {
+          let content = fs.readFileSync(localEnvPath, "utf-8");
+          if (content.includes("GEMINI_API_KEY=")) {
+            content = content.replace(/GEMINI_API_KEY=.*/g, `GEMINI_API_KEY=${apiKey}`);
+          } else {
+            content += `\nGEMINI_API_KEY=${apiKey}\n`;
           }
-        } catch {
-          // ignore error writing to secondary paths
+          if (content.includes("GEMINI_MODEL=")) {
+            content = content.replace(/GEMINI_MODEL=.*/g, `GEMINI_MODEL=${model}`);
+          } else {
+            content += `GEMINI_MODEL=${model}\n`;
+          }
+          fs.writeFileSync(localEnvPath, content, "utf-8");
         }
+      } catch (err: any) {
+        console.warn(`[WARN] Failed to write local .env: ${err?.message}`);
       }
 
       res.json({

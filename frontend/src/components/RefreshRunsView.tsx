@@ -25,11 +25,14 @@ export const RefreshRunsView: React.FC<RefreshRunsViewProps> = ({ runs, onFetchR
   const [urlSearch, setUrlSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [isUrlPanelExpanded, setIsUrlPanelExpanded] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 25;
 
   const selectedRun = runs.find((r) => r.id === selectedRunId) || runs[0];
 
   const handleSelectRun = async (runId: string) => {
     setSelectedRunId(runId);
+    setCurrentPage(1);
     setIsLoadingUrls(true);
     try {
       const data = await onFetchRunDetails(runId);
@@ -61,6 +64,9 @@ export const RefreshRunsView: React.FC<RefreshRunsViewProps> = ({ runs, onFetchR
     }
     return true;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filteredUrls.length / pageSize));
+  const paginatedUrls = filteredUrls.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-6">
@@ -248,7 +254,7 @@ export const RefreshRunsView: React.FC<RefreshRunsViewProps> = ({ runs, onFetchR
                               </td>
                             </tr>
                           ) : (
-                            filteredUrls.map((u, idx) => (
+                            paginatedUrls.map((u, idx) => (
                               <tr key={idx} className="hover:bg-slate-900/40">
                                 <td className="p-2.5 text-slate-200 max-w-xs truncate" title={u.url}>{u.url}</td>
                                 <td className="p-2.5">
@@ -282,6 +288,32 @@ export const RefreshRunsView: React.FC<RefreshRunsViewProps> = ({ runs, onFetchR
                         </tbody>
                       </table>
                     </div>
+
+                    {/* Pagination Controls */}
+                    {totalPages > 1 && (
+                      <div className="flex items-center justify-between text-xs pt-1">
+                        <span className="text-slate-400">
+                          Showing {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredUrls.length)} of {filteredUrls.length} URLs
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage === 1}
+                            className="px-2.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                          >
+                            Previous
+                          </button>
+                          <span className="text-slate-400 px-2">Page {currentPage} of {totalPages}</span>
+                          <button
+                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                            disabled={currentPage === totalPages}
+                            className="px-2.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Bottom Total Fetched URL Count */}
                     <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-lg flex items-center justify-between text-xs">

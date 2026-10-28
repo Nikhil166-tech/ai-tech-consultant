@@ -39,9 +39,14 @@ class Task1MeetingClient:
             "history": [],
         }
 
+        internal_key = os.getenv("INTERNAL_SERVICE_KEY", "")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Internal-Service-Key": internal_key,
+        }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                res = await client.post(url, json=payload)
+                res = await client.post(url, json=payload, headers=headers)
 
             if res.status_code != 200:
                 return Task1ClientResult(

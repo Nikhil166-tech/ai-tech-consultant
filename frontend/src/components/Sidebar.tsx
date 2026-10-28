@@ -9,19 +9,24 @@ import {
   CheckSquare,
   BarChart3,
   Settings,
-  PenSquare
+  PenSquare,
+  Activity,
+  Cpu,
+  Layers
 } from "lucide-react";
 
 export type ViewType =
   | "dashboard"
+  | "inbox"
+  | "reviews"
+  | "meeting_sow"
+  | "chat"
   | "knowledge"
   | "sitemaps"
   | "refresh_runs"
   | "quarantine"
-  | "chat"
-  | "inbox"
-  | "reviews"
   | "analytics"
+  | "ai_models"
   | "settings";
 
 interface SidebarProps {
@@ -36,6 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
   onSelectView,
   pendingReviewCount,
+  quarantinedCount = 0,
   onOpenCompose
 }) => {
   const navItems: Array<{
@@ -54,11 +60,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: pendingReviewCount > 0 ? pendingReviewCount : undefined,
       badgeColor: "bg-sky-500 text-white"
     },
+    { id: "meeting_sow", label: "Meeting-to-SOW", icon: <Layers className="w-4 h-4" /> },
     { id: "chat", label: "AI Knowledge Chat", icon: <MessageSquare className="w-4 h-4" /> },
     { id: "knowledge", label: "Knowledge Brain", icon: <BookOpen className="w-4 h-4" /> },
     { id: "sitemaps", label: "Sitemap Management", icon: <Globe className="w-4 h-4" /> },
     { id: "refresh_runs", label: "Refresh Runs", icon: <RefreshCw className="w-4 h-4" /> },
+    {
+      id: "quarantine",
+      label: "Health & Archive",
+      icon: <Activity className="w-4 h-4" />,
+      badge: quarantinedCount > 0 ? quarantinedCount : undefined,
+      badgeColor: "bg-amber-500 text-slate-950 font-bold"
+    },
     { id: "analytics", label: "Automation Analytics", icon: <BarChart3 className="w-4 h-4" /> },
+    { id: "ai_models", label: "AI Model Routing", icon: <Cpu className="w-4 h-4" /> },
     { id: "settings", label: "Settings", icon: <Settings className="w-4 h-4" /> }
   ];
 

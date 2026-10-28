@@ -30,6 +30,7 @@ export class GmailClient {
 
   private readonly tokensPath: string;
   private readonly processedIdsPath: string;
+  public readonly userId?: string;
 
   constructor(options?: {
     clientId?: string;
@@ -37,13 +38,29 @@ export class GmailClient {
     redirectUri?: string;
     tokensPath?: string;
     processedIdsPath?: string;
+    userId?: string;
   }) {
     this.clientId = options?.clientId || process.env.GOOGLE_CLIENT_ID || "";
     this.clientSecret = options?.clientSecret || process.env.GOOGLE_CLIENT_SECRET || "";
     this.redirectUri = options?.redirectUri || process.env.GOOGLE_REDIRECT_URI || "http://localhost:3000/api/v1/gmail/callback";
-    this.tokensPath = options?.tokensPath || path.join(process.cwd(), "data", "gmail_tokens.json");
-    this.processedIdsPath = options?.processedIdsPath || path.join(process.cwd(), "data", "gmail_processed_ids.json");
+    this.userId = options?.userId;
+    const userSuffix = this.userId ? `_${this.userId}` : "";
+    this.tokensPath = options?.tokensPath || path.join(process.cwd(), "data", `gmail_tokens${userSuffix}.json`);
+    this.processedIdsPath = options?.processedIdsPath || path.join(process.cwd(), "data", `gmail_processed_ids${userSuffix}.json`);
     this.loadState();
+  }
+
+  public static forUser(userId: string): GmailClient {
+    return new GmailClient({ userId });
+  }
+
+  public forUser(userId: string): GmailClient {
+    return new GmailClient({
+      clientId: this.clientId,
+      clientSecret: this.clientSecret,
+      redirectUri: this.redirectUri,
+      userId
+    });
   }
 
   public getStatus(): GmailAccountStatus {

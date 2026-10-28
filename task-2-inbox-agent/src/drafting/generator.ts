@@ -6,6 +6,7 @@ import {
   Task1Citation
 } from "../types/index.js";
 import { FeedbackStore } from "../feedback/store.js";
+import { ModelFallbackEngine, STABLE_GEMINI_MODELS, STABLE_CLAUDE_MODELS } from "./fallback_engine.js";
 
 export interface DraftGeneratorOptions {
   apiKey?: string;
@@ -13,6 +14,9 @@ export interface DraftGeneratorOptions {
   feedbackStore?: FeedbackStore;
   allowDeterministicAutoSend?: boolean;
 }
+
+export const LATEST_GEMINI_MODELS = STABLE_GEMINI_MODELS;
+export const LATEST_CLAUDE_MODELS = STABLE_CLAUDE_MODELS;
 
 export class DraftGenerator {
   public apiKey?: string;
@@ -35,7 +39,12 @@ export class DraftGenerator {
     version: "v1_baseline" | "v2_feedback_enhanced" = "v1_baseline"
   ): Promise<DraftReply> {
     const draftId = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const isEscalation = classification.requiresHumanReview || !knowledge || !knowledge.is_known || knowledge.needs_human_review;
+    const isEscalation =
+      classification.requiresHumanReview ||
+      !knowledge ||
+      !knowledge.is_known ||
+      knowledge.needs_human_review ||
+      classification.kind.productArea === "UNKNOWN";
 
     // Check baseline auto-send eligibility
     let autoSendEligible = !isEscalation && classification.kind.riskLevel === "LOW";
@@ -45,6 +54,8 @@ export class DraftGenerator {
       autoSendEligible = false;
       blockReason = classification.riskFlags.length > 0
         ? `High-risk flags detected: [${classification.riskFlags.join(", ")}]`
+        : classification.kind.productArea === "UNKNOWN"
+        ? "Unknown product area requires human review"
         : !knowledge?.is_known
         ? "Insufficient documentation evidence in Knowledge Brain"
         : "Human specialist review flagged as required";
@@ -229,68 +240,19 @@ export class DraftGenerator {
       `</verified_knowledge_evidence>\n\n` +
       `Draft a direct, professional, helpful customer reply based strictly on the verified evidence above.`;
 
-    // If key starts with sk-ant-, use Anthropic for backward compatibility with Anthropic keys
-    if (this.apiKey?.startsWith("sk-ant-")) {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": this.apiKey!,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-          ...(process.env.ANTHROPIC_WORKSPACE_ID ? { "anthropic-workspace-id": process.env.ANTHROPIC_WORKSPACE_ID } : {})
-        },
-        body: JSON.stringify({
-          model: this.model.includes("gemini") ? "claude-haiku-5-5" : this.model,
-          max_tokens: 500,
-          system: systemPrompt,
-          messages: [{ role: "user", content: userPrompt }]
-        })
-      });
-
-      if (!res.ok) {
-        throw new Error(`Claude API error HTTP ${res.status}`);
-      }
-
-      const data: any = await res.json();
-      return data.content[0].text.trim();
-    }
-
-    // Default: Google Gemini API Workflow
-    const geminiModel = this.model.includes("claude") ? "gemini-3.5-flash" : this.model;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${this.apiKey}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: userPrompt }]
-          }
-        ],
-        systemInstruction: {
-          parts: [{ text: systemPrompt }]
-        },
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 600
-        }
-      })
+    // Execute multi-model fallback cascade via production ModelFallbackEngine
+    const fallbackEngine = new ModelFallbackEngine({
+      role: "EMAIL_DRAFTING",
+      geminiApiKey: !this.apiKey?.startsWith("sk-ant-") ? this.apiKey : process.env.GEMINI_API_KEY,
+      anthropicApiKey: this.apiKey?.startsWith("sk-ant-") ? this.apiKey : process.env.ANTHROPIC_API_KEY,
+      anthropicWorkspaceId: process.env.ANTHROPIC_WORKSPACE_ID
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`Gemini API error HTTP ${res.status}: ${errText}`);
+    const result = await fallbackEngine.executeWithFallback(systemPrompt, userPrompt);
+    if (!result.text) {
+      throw new Error(result.telemetry.fallbackReason || "All drafting models in fallback cascade failed");
     }
-
-    const data: any = await res.json();
-    const candidateText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!candidateText) {
-      throw new Error("No text content returned from Gemini API");
-    }
-    return candidateText.trim();
+    return result.text;
   }
 
   private buildFeedbackContext(classification: EmailClassification | string): string {
